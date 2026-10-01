@@ -1,0 +1,13 @@
+{
+  "appId": "com.neasboardinghorse",
+  "appName": "Nea's Boarding Horse",
+  "webDir": "public",
+  "server": {
+    "url": "https://YOUR-SERVER-URL-HERE",
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

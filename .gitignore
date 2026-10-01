@@ -1,0 +1,17 @@
+# Environment secrets
+.env
+server/.env
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/

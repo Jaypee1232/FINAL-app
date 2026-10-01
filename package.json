@@ -1,0 +1,26 @@
+{
+  "name": "new-folder-(20)",
+  "version": "1.0.0",
+  "description": "Nea's Boarding Horse is a private community website with a browser frontend, an Express backend, Firestore for application data, and Cloudinary for uploaded photos/videos.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jaypee1232/NB1.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Jaypee1232/NB1/issues"
+  },
+  "homepage": "https://github.com/Jaypee1232/NB1#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  }
+}

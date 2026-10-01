@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Nea\'s Boarding Horse</string>
+    <string name="title_activity_main">Nea\'s Boarding Horse</string>
+    <string name="package_name">com.neasboardinghorse</string>
+    <string name="custom_url_scheme">com.neasboardinghorse</string>
+</resources>
