@@ -23,6 +23,7 @@
    special (default) database instead, leave this unset.
 ========================================================= */
 
+const crypto = require("crypto");
 const admin = require("firebase-admin");
 const { getFirestore, initializeFirestore, FieldValue } = require("firebase-admin/firestore");
 
@@ -133,6 +134,38 @@ async function deletePushSub(id) {
   await PUSH_DOC().set({ subs: { [id]: FieldValue.delete() } }, { merge: true });
 }
 
+// Birthdays live in their own document (nbh/birthdays) so they are never part
+// of nbh/state, which is what every member receives. Only the admin routes in
+// server.js ever return other people's birthdays.
+// Shape: { entries: { <sha256(lowercase username)>: { username, month, day, year } } }
+const BIRTHDAYS_DOC = () => NBH().doc("birthdays");
+
+function birthdayKey(username) {
+  return crypto.createHash("sha256").update(String(username || "").trim().toLowerCase()).digest("hex");
+}
+
+async function readBirthdays() {
+  const snap = await BIRTHDAYS_DOC().get();
+  const d = snap.exists ? snap.data() : {};
+  return d && d.entries && typeof d.entries === "object" ? Object.values(d.entries) : [];
+}
+
+async function getBirthday(username) {
+  const snap = await BIRTHDAYS_DOC().get();
+  const d = snap.exists ? snap.data() : {};
+  return (d && d.entries && d.entries[birthdayKey(username)]) || null;
+}
+
+async function saveBirthday(username, birthday) {
+  await BIRTHDAYS_DOC().set({
+    entries: { [birthdayKey(username)]: removeUndefined({ username: String(username), ...birthday }) }
+  }, { merge: true });
+}
+
+async function deleteBirthday(username) {
+  await BIRTHDAYS_DOC().set({ entries: { [birthdayKey(username)]: FieldValue.delete() } }, { merge: true });
+}
+
 function getMessaging() {
   init();
   return admin.messaging();
@@ -163,4 +196,4 @@ async function ensureSeeded(defaultStateObj, seedCredentials) {
   }
 }
 
-module.exports = { readState, writeState, writeStateIfRevision, readCredentials, writeCredentials, ensureSeeded, readPushSubs, savePushSub, deletePushSub, getMessaging };
+module.exports = { readState, writeState, writeStateIfRevision, readCredentials, writeCredentials, ensureSeeded, readPushSubs, savePushSub, deletePushSub, getMessaging, readBirthdays, getBirthday, saveBirthday, deleteBirthday };
