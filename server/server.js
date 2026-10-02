@@ -1,4 +1,4 @@
-console.log("BUILD 2026-10-02-e push-notifications");
+console.log("BUILD 2026-10-02-f logout-on-exit");
 /* =========================================================
    NEA'S BOARDING HORSE — BACKEND SERVER
    Express + Firestore + Cloudinary.
@@ -60,6 +60,11 @@ const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 const COOKIE_NAME = "nbh_session";
 const SESSION_DAYS = 30;
+// When true (the default) a login only lasts until the member exits the site/app:
+// the cookie is a "session cookie" that the browser drops when it closes, and the
+// website also asks for a fresh login whenever it is opened again. Set the
+// environment variable LOGOUT_ON_EXIT=false to go back to 30-day logins.
+const LOGOUT_ON_EXIT = String(process.env.LOGOUT_ON_EXIT || "true").toLowerCase() !== "false";
 const MAX_VIDEO_BYTES = 15 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -368,13 +373,15 @@ function requireAdmin(req, res, next) {
 }
 
 function setSessionCookie(res, username) {
-  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: `${SESSION_DAYS}d` });
-  res.cookie(COOKIE_NAME, token, {
+  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: LOGOUT_ON_EXIT ? "1d" : `${SESSION_DAYS}d` });
+  const cookieOptions = {
     httpOnly: true,
     sameSite: "lax",
-    secure: NODE_ENV === "production",
-    maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000
-  });
+    secure: NODE_ENV === "production"
+  };
+  // No maxAge => session cookie, removed by the browser when it is closed.
+  if (!LOGOUT_ON_EXIT) cookieOptions.maxAge = SESSION_DAYS * 24 * 60 * 60 * 1000;
+  res.cookie(COOKIE_NAME, token, cookieOptions);
 }
 
 // ---------------------------------------------------------
@@ -453,7 +460,7 @@ app.post("/api/auth/login", loginLimiter, ah(async (req, res) => {
   await writeState(state);
 
   setSessionCookie(res, user.username);
-  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin });
+  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin, logoutOnExit: LOGOUT_ON_EXIT });
 }));
 
 app.post("/api/auth/logout", (req, res) => {
@@ -465,7 +472,7 @@ app.get("/api/auth/me", requireAuth, ah(async (req, res) => {
   const state = await readState();
   const user = state.users.find(u => u.username === req.username);
   if (!user) return res.status(401).json({ error: "Account no longer exists." });
-  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin });
+  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin, logoutOnExit: LOGOUT_ON_EXIT });
 }));
 
 app.post("/api/auth/change-password", requireAuth, ah(async (req, res) => {
