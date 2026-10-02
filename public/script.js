@@ -527,6 +527,7 @@ if (loginForm) {
     try {
       const result = await api("/api/auth/login", { method: "POST", body: { username, password } });
       session = result;
+      markTabAlive();
       await loadStateAndEnter();
     } catch (error) {
       setLoginError(error.message || "Incorrect username or password.");
@@ -554,6 +555,8 @@ function enterApplication() {
   updateAdminNavigation();
   openPage("home");
   startPolling();
+  initPush();
+  openPostFromUrl();
 }
 
 function updateAdminNavigation() {
@@ -751,8 +754,47 @@ async function deleteAdminUser(encodedUsername) {
 const adminCreateForm = document.getElementById("adminCreateForm");
 if (adminCreateForm) adminCreateForm.addEventListener("submit", createAdminUser);
 
-async function logout() {
+/* =========================================================
+   LOGOUT ON EXIT
+   When the server has LOGOUT_ON_EXIT on (the default), a member
+   is signed out whenever they exit the site/app: closing the tab
+   or app, or staying away longer than LOGOUT_AFTER_AWAY_SECONDS.
+   A page refresh does NOT sign anyone out. Push alerts keep working
+   after an exit-logout; only the Log Out button turns them off.
+========================================================= */
+
+const LOGOUT_AFTER_AWAY_SECONDS = 180; // set to 0 to only log out when the tab/app is closed
+const TAB_ALIVE_KEY = "nbh_tab_alive";
+let hiddenSince = null;
+
+function markTabAlive() {
+  try { sessionStorage.setItem(TAB_ALIVE_KEY, "1"); } catch (e) { /* ignore */ }
+}
+
+function clearTabAlive() {
+  try { sessionStorage.removeItem(TAB_ALIVE_KEY); } catch (e) { /* ignore */ }
+}
+
+function tabWasAlive() {
+  try { return sessionStorage.getItem(TAB_ALIVE_KEY) === "1"; } catch (e) { return true; }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    hiddenSince = Date.now();
+    return;
+  }
+  const away = hiddenSince ? Date.now() - hiddenSince : 0;
+  hiddenSince = null;
+  if (session && session.logoutOnExit && LOGOUT_AFTER_AWAY_SECONDS > 0 && away > LOGOUT_AFTER_AWAY_SECONDS * 1000) {
+    logout({ keepPush: true, message: "You were signed out because you left the app. Please log in again." });
+  }
+});
+
+async function logout(options = {}) {
   stopPolling();
+  clearTabAlive();
+  if (!options.keepPush) await disablePushForThisDevice();
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch (error) {
@@ -773,7 +815,7 @@ async function logout() {
   document.getElementById("loginForm")?.reset();
 
   showWelcome();
-  showMessage("You've been logged out.");
+  showMessage(options.message || "You've been logged out.");
 }
 
 /* =========================================================
@@ -1694,6 +1736,124 @@ function renderUserProfileModal() {
 }
 
 /* =========================================================
+   PUSH NOTIFICATIONS
+   - Android app (Capacitor): Firebase Cloud Messaging token.
+   - Browser / installed web app: Web Push subscription.
+   Both are registered with the server, which sends the pushes
+   when someone reacts, comments, reposts or posts something new.
+========================================================= */
+
+const PUSH_TOKEN_KEY = "nbh_push_token";
+let nativePushListenersAdded = false;
+
+function isNativeApp() {
+  try {
+    return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === "function" && window.Capacitor.isNativePlatform());
+  } catch (e) {
+    return false;
+  }
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function subscribeWebPush() {
+  if (isNativeApp()) return false;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") return false;
+  if (Notification.permission !== "granted") return false;
+  const cfg = await api("/api/push/config");
+  if (!cfg || !cfg.webPublicKey) return false; // server has no VAPID keys yet
+  const reg = await navigator.serviceWorker.ready;
+  const key = urlBase64ToUint8Array(cfg.webPublicKey);
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    try {
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    } catch (err) {
+      // An older subscription made with different keys blocks a new one — clear it and retry once.
+      const old = await reg.pushManager.getSubscription();
+      if (old) await old.unsubscribe();
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    }
+  }
+  await api("/api/push/subscribe", { method: "POST", body: { type: "web", subscription: sub.toJSON() } });
+  return true;
+}
+
+async function setupNativePush() {
+  const PN = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PushNotifications;
+  if (!PN) return false; // the APK was built without the push plugin
+  if (!nativePushListenersAdded) {
+    nativePushListenersAdded = true;
+    PN.addListener("registration", async token => {
+      try { localStorage.setItem(PUSH_TOKEN_KEY, token.value); } catch (e) { /* ignore */ }
+      try {
+        await api("/api/push/subscribe", { method: "POST", body: { type: "fcm", token: token.value } });
+      } catch (err) {
+        console.warn("Could not register this device for push.", err);
+      }
+    });
+    PN.addListener("registrationError", err => console.warn("Push registration error.", err));
+    PN.addListener("pushNotificationActionPerformed", action => {
+      const id = Number(action && action.notification && action.notification.data && action.notification.data.postId);
+      if (id && data.posts.some(p => p.id === id)) openPostView(id);
+    });
+  }
+  let perm = await PN.checkPermissions();
+  if (perm.receive === "prompt" || perm.receive === "prompt-with-rationale") perm = await PN.requestPermissions();
+  if (perm.receive !== "granted") return false;
+  await PN.register();
+  return true;
+}
+
+function initPush() {
+  const run = isNativeApp() ? setupNativePush() : subscribeWebPush();
+  run.catch(err => console.warn("Push setup skipped.", err));
+}
+
+// Stop sending this phone/browser the previous member's alerts after logout.
+async function disablePushForThisDevice() {
+  try {
+    if (isNativeApp()) {
+      let token = null;
+      try { token = localStorage.getItem(PUSH_TOKEN_KEY); } catch (e) { /* ignore */ }
+      if (token) await api("/api/push/unsubscribe", { method: "POST", body: { token } });
+    } else if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+      if (sub) await api("/api/push/unsubscribe", { method: "POST", body: { endpoint: sub.endpoint } });
+    }
+  } catch (err) {
+    console.warn("Could not unregister push on logout.", err);
+  }
+}
+
+// Tapping a push opens that post (link form /?post=123, or a message from the service worker).
+function openPostFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = Number(params.get("post"));
+    if (id && data.posts.some(p => p.id === id)) openPostView(id);
+    if (params.has("post")) history.replaceState(null, "", window.location.pathname);
+  } catch (e) { /* ignore */ }
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", event => {
+    const msg = event.data || {};
+    if (msg.type === "open-post" && session && msg.postId != null && data.posts.some(p => p.id === msg.postId)) {
+      openPostView(msg.postId);
+    }
+  });
+}
+
+/* =========================================================
    NOTIFICATIONS
 ========================================================= */
 
@@ -1731,6 +1891,7 @@ function renderNotifications() {
 }
 
 function renderNotificationPermissionBanner() {
+  if (isNativeApp()) return "";
   if (typeof Notification === "undefined") return "";
   if (Notification.permission === "granted" || Notification.permission === "denied") return "";
   return `
@@ -1749,6 +1910,7 @@ function requestNotificationPermission() {
   Notification.requestPermission().then(permission => {
     if (permission === "granted") {
       showMessage("Notifications turned on!");
+      subscribeWebPush().catch(err => console.warn("Push subscribe failed.", err));
     } else {
       showMessage("Notifications are off. You can turn them on later from your browser settings.");
     }
@@ -2258,6 +2420,15 @@ async function startup() {
 
   try {
     session = await api("/api/auth/me");
+    if (session.logoutOnExit && !tabWasAlive()) {
+      // The site was exited since the last visit (tab/app closed): require a fresh login.
+      try { await api("/api/auth/logout", { method: "POST" }); } catch (e) { /* ignore */ }
+      session = null;
+      showWelcome();
+      showMessage("Please log in again.");
+      return;
+    }
+    markTabAlive();
     await loadStateAndEnter();
   } catch (error) {
     session = null;
