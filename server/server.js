@@ -1,4 +1,4 @@
-console.log("BUILD 2026-10-02-b store-removeUndefined");
+console.log("BUILD 2026-10-02-c follow-newmembers-comments-videos");
 /* =========================================================
    NEA'S BOARDING HORSE — BACKEND SERVER
    Express + Firestore + Cloudinary.
@@ -490,7 +490,8 @@ app.get("/api/state", requireAuth, ah(async (req, res) => {
     users: state.users.map(u => ({
       username: u.username, name: u.name, bio: u.bio || "", avatar: u.avatar || "U",
       avatarImage: u.avatarImage || null, bannerImage: u.bannerImage || null,
-      isAdmin: !!u.isAdmin, disabled: !!u.disabled
+      isAdmin: !!u.isAdmin, disabled: !!u.disabled,
+      joinedAt: Number(u.joinedAt) || 0
     })),
     posts: state.posts,
     social: { [req.username]: ownSocial },
@@ -518,6 +519,16 @@ function sameJSON(a, b) {
   } catch (error) {
     return false;
   }
+}
+
+// Looser identity for a comment, used only to match the sender's copy against the
+// server's copy (ids / usernames may be missing on a stale client copy).
+function commentKey(c) {
+  return [c && c.name, c && c.text, c && c.time].map(v => String(v == null ? "" : v)).join("|");
+}
+
+function newCommentId() {
+  return "c_" + crypto.randomBytes(6).toString("hex");
 }
 
 function clampString(value, maxLen) {
@@ -576,11 +587,13 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
   const unmatchedOld = oldComments.slice();
   const newIncoming = [];
   for (const c of incomingComments) {
-    const at = unmatchedOld.findIndex(o => sameJSON(o, c));
+    const at = unmatchedOld.findIndex(o => commentKey(o) === commentKey(c));
     if (at >= 0) unmatchedOld.splice(at, 1);
     else newIncoming.push(c);
   }
   const appended = newIncoming.map(c => ({
+    id: newCommentId(),
+    username: req.username,
     // A comment's identity is always the CURRENT server-known profile of whoever is saving —
     // never trusted from the client — so nobody can post a comment as someone else.
     name: authorProfile.name,
@@ -748,6 +761,23 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     if (!seen.has(id)) { finalPosts.push(post); seen.add(id); }
   }
   const validPostIds = new Set(finalPosts.map(p => p.id));
+
+  // ---- COMMENT DELETES: a comment can be removed by whoever wrote it, by the
+  // owner of the post it is on, or by an admin — nobody else.
+  const commentDeletes = Array.isArray(incoming.deletedComments) ? incoming.deletedComments : [];
+  for (const del of commentDeletes) {
+    if (!del || typeof del.postId !== "number" || typeof del.commentId !== "string") continue;
+    const post = finalPosts.find(p => p.id === del.postId);
+    if (!post || !Array.isArray(post.commentsList)) continue;
+    const comment = post.commentsList.find(c => c && c.id === del.commentId);
+    if (!comment) continue;
+    const wroteIt = comment.username
+      ? String(comment.username).toLowerCase() === String(req.username).toLowerCase()
+      : comment.name === authorProfile.name;
+    if (!(wroteIt || post.username === req.username || req.isAdmin)) continue;
+    post.commentsList = post.commentsList.filter(c => c !== comment);
+    post.comments = post.commentsList.length;
+  }
 
   // ---- SOCIAL: a member may freely rewrite their OWN slice; every other
   // member's slice keeps its saves/reactions/albums/reposts untouched and
@@ -929,9 +959,23 @@ app.post("/api/admin/users", requireAdmin, ah(async (req, res) => {
     avatar: (name || username).charAt(0).toUpperCase(),
     avatarImage: null,
     bannerImage: null,
-    isAdmin: false
+    isAdmin: false,
+    joinedAt: Date.now()
   });
   state.social[username] = defaultSocialFor();
+  // Everyone is automatically connected: tell every existing member a new person joined.
+  for (const other of state.users) {
+    if (other.username === username) continue;
+    if (!state.social[other.username]) state.social[other.username] = defaultSocialFor();
+    state.social[other.username].notifications = [{
+      name: name || username,
+      avatar: (name || username).charAt(0).toUpperCase(),
+      text: "joined the community \u2014 you\u2019re now connected!",
+      time: "Just now",
+      unread: true,
+      type: "new_member"
+    }, ...(state.social[other.username].notifications || [])].slice(0, 300);
+  }
   await writeCredentials(credentials);
   await writeState(state);
   res.status(201).json({ ok: true, username });
@@ -1030,9 +1074,16 @@ async function migratePostIds() {
       p.id = seq; used.add(seq); fixed++;
     }
   });
-  if (fixed) {
+  let commentsFixed = 0;
+  state.posts.forEach(p => {
+    (Array.isArray(p.commentsList) ? p.commentsList : []).forEach(c => {
+      if (c && !c.id) { c.id = newCommentId(); commentsFixed++; }
+    });
+  });
+  if (fixed || commentsFixed) {
     await writeState(state);
-    console.log(`[migrate] Gave ${fixed} existing post(s) a missing id.`);
+    if (fixed) console.log(`[migrate] Gave ${fixed} existing post(s) a missing id.`);
+    if (commentsFixed) console.log(`[migrate] Gave ${commentsFixed} existing comment(s) an id.`);
   }
 }
 
