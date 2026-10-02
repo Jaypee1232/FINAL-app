@@ -862,7 +862,13 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     });
   }
   finalState.rev = currentRev + 1;
-  res.json({ ok: true, rev: finalState.rev });
+  res.json({
+    ok: true,
+    rev: finalState.rev,
+    // True totals (reactions/shares are recomputed from every member), so the
+    // saving client never keeps showing a stale count.
+    posts: finalPosts.map(post => ({ id: post.id, reactions: post.reactions || {}, shares: post.shares || 0 }))
+  });
 }));
 
 // ---------------------------------------------------------
