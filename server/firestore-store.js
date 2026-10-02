@@ -24,7 +24,7 @@
 ========================================================= */
 
 const admin = require("firebase-admin");
-const { getFirestore, initializeFirestore } = require("firebase-admin/firestore");
+const { getFirestore, initializeFirestore, FieldValue } = require("firebase-admin/firestore");
 
 let db = null;
 
@@ -115,6 +115,29 @@ async function writeStateIfRevision(obj, expectedRev) {
   return transactionResult;
 }
 
+// Push subscriptions live in their own small document (nbh/push) so they never
+// bloat or conflict with the main feed state. Shape: { subs: { <id>: {...} } }.
+const PUSH_DOC = () => NBH().doc("push");
+
+async function readPushSubs() {
+  const snap = await PUSH_DOC().get();
+  const d = snap.exists ? snap.data() : {};
+  return d && d.subs && typeof d.subs === "object" ? d.subs : {};
+}
+
+async function savePushSub(id, sub) {
+  await PUSH_DOC().set({ subs: { [id]: removeUndefined(sub) } }, { merge: true });
+}
+
+async function deletePushSub(id) {
+  await PUSH_DOC().set({ subs: { [id]: FieldValue.delete() } }, { merge: true });
+}
+
+function getMessaging() {
+  init();
+  return admin.messaging();
+}
+
 async function readCredentials() {
   const snap = await CREDENTIALS_DOC().get();
   return snap.exists ? snap.data() : {};
@@ -140,4 +163,4 @@ async function ensureSeeded(defaultStateObj, seedCredentials) {
   }
 }
 
-module.exports = { readState, writeState, writeStateIfRevision, readCredentials, writeCredentials, ensureSeeded };
+module.exports = { readState, writeState, writeStateIfRevision, readCredentials, writeCredentials, ensureSeeded, readPushSubs, savePushSub, deletePushSub, getMessaging };
