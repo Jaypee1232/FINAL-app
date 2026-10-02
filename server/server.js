@@ -704,14 +704,19 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
   // post's own author (or an admin); deleting a post likewise requires
   // being its author or an admin. Everyone else's save simply leaves
   // other members' posts exactly as they were.
+  const explicitDeleteIds = new Set(
+    (Array.isArray(incoming.deletedPostIds) ? incoming.deletedPostIds : []).filter(id => typeof id === "number")
+  );
   const incomingPostsById = new Map(incoming.posts.filter(p => p && typeof p.id === "number").map(p => [p.id, p]));
   const finalPostsById = new Map();
 
   for (const currentPost of current.posts) {
     const incomingPost = incomingPostsById.get(currentPost.id);
     if (!incomingPost) {
-      // Missing from what was sent = a deletion. Only the author/admin may do that.
-      if (currentPost.username === req.username || req.isAdmin) continue;
+      // A post is only deleted when the client explicitly lists its id in deletedPostIds
+      // (and the sender is its author or an admin). A post that is merely missing from a
+      // stale copy of the feed is kept, so it can never be wiped by someone else's save.
+      if (explicitDeleteIds.has(currentPost.id) && (currentPost.username === req.username || req.isAdmin)) continue;
       finalPostsById.set(currentPost.id, currentPost);
       continue;
     }
