@@ -101,8 +101,8 @@ if (CLOUDINARY_CONFIGURED) {
 } else {
   console.warn(
     "\n[WARN] Cloudinary env vars are not set (CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET).\n" +
-    "       Uploads will be saved on this server's own disk instead. That is fine for testing, but set\n" +
-    "       Cloudinary before going live because many hosts wipe the disk on every deploy. See .env.example.\n"
+    "       Uploads will be REJECTED until Cloudinary is set (or ALLOW_LOCAL_UPLOADS=true for local testing only).\n" +
+    "       Many hosts wipe the disk on every deploy, so local files would be lost. See README.md.\n"
   );
 }
 
@@ -439,8 +439,15 @@ app.post("/api/upload", requireAuth, async (req, res) => {
     return res.status(413).json({ error: `File is too large. Maximum allowed is ${isVideo ? 15 : 8}MB.` });
   }
 
+  if (!CLOUDINARY_CONFIGURED && process.env.ALLOW_LOCAL_UPLOADS !== "true") {
+    // Hosts like Render wipe the disk on restart/redeploy, so files saved locally
+    // would vanish while the post stays. Fail loudly instead of losing media silently.
+    console.error("[upload] Rejected: Cloudinary is not configured (set CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET).");
+    return res.status(503).json({ error: "Media storage isn't set up on the server yet, so this file can't be saved. Please tell the admin." });
+  }
+
   if (!CLOUDINARY_CONFIGURED) {
-    // Local fallback: keep the file on this server's disk (safe types only, random name).
+    // Local fallback (development only, needs ALLOW_LOCAL_UPLOADS=true): keep the file on this server's disk (safe types only, random name).
     const EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" };
     const m = match;
     if (!m || !EXT[m[1]]) {
