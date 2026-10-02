@@ -626,6 +626,34 @@ function clampStringArray(value, maxItems, maxLen) {
   return value.filter(v => typeof v === "string").slice(0, maxItems).map(v => clampString(v, maxLen));
 }
 
+// ---------------------------------------------------------
+// MUSIC (iTunes Search previews, 30-second clips)
+// Only Apple's own preview/artwork hosts are accepted, so a member can
+// never attach an arbitrary link to a post.
+// ---------------------------------------------------------
+function isAppleMediaUrl(value) {
+  try {
+    const u = new URL(String(value));
+    return u.protocol === "https:" && (u.hostname.endsWith(".mzstatic.com") || u.hostname.endsWith(".itunes.apple.com"));
+  } catch (e) {
+    return false;
+  }
+}
+
+function sanitizeMusic(m) {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return null;
+  if (!isAppleMediaUrl(m.previewUrl)) return null;
+  const start = Number(m.start);
+  return {
+    id: clampString(m.id, 40),
+    title: clampString(m.title, 150),
+    artist: clampString(m.artist, 150),
+    artwork: isAppleMediaUrl(m.artwork) ? clampString(m.artwork, 500) : "",
+    previewUrl: clampString(m.previewUrl, 500),
+    start: Number.isFinite(start) ? Math.min(Math.max(start, 0), 25) : 0
+  };
+}
+
 // Builds the one post object a member is allowed to have produced, given
 // what they sent (incomingPost) and — for edits — what the server already
 // has (currentPost). Content authorship (who wrote it, what it says, its
@@ -658,6 +686,8 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     base.video = typeof incomingPost.video === "string" ? clampString(incomingPost.video, 2000) : null;
     if (!base.video) delete base.video;
     if (!base.image) delete base.image;
+    const music = sanitizeMusic(incomingPost.music);
+    if (music) base.music = music; else delete base.music;
   }
   // Non-owners editing an existing post: `base` already equals currentPost,
   // so authorship/text/media are left exactly as the server had them.
@@ -999,6 +1029,40 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     // saving client never keeps showing a stale count.
     posts: finalPosts.map(post => ({ id: post.id, reactions: post.reactions || {}, shares: post.shares || 0 }))
   });
+}));
+
+// ---------------------------------------------------------
+// MUSIC SEARCH ROUTE
+// ---------------------------------------------------------
+const musicHits = new Map(); // username -> [timestamps]
+app.get("/api/music/search", requireAuth, ah(async (req, res) => {
+  const q = String(req.query.q || "").trim().slice(0, 80);
+  if (q.length < 2) return res.json({ results: [] });
+  const now = Date.now();
+  const hits = (musicHits.get(req.username) || []).filter(t => now - t < 60000);
+  if (hits.length >= 30) return res.status(429).json({ error: "Too many searches. Try again in a minute." });
+  hits.push(now);
+  musicHits.set(req.username, hits);
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch("https://itunes.apple.com/search?media=music&entity=song&limit=15&term=" + encodeURIComponent(q), { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) throw new Error("Music service returned " + r.status);
+    const json = await r.json();
+    const results = (json.results || [])
+      .filter(t => t && t.previewUrl && isAppleMediaUrl(t.previewUrl))
+      .map(t => ({
+        id: String(t.trackId),
+        title: t.trackName,
+        artist: t.artistName,
+        artwork: isAppleMediaUrl(t.artworkUrl100) ? String(t.artworkUrl100).replace("100x100", "200x200") : "",
+        previewUrl: t.previewUrl
+      }));
+    res.json({ results });
+  } catch (err) {
+    res.status(502).json({ error: "Couldn't reach the music search. Try again." });
+  }
 }));
 
 // ---------------------------------------------------------
