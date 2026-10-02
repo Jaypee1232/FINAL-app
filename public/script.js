@@ -575,6 +575,7 @@ async function loadAdminPanel() {
     document.getElementById("adminPostCount").textContent = result.posts.length;
     renderAdminUsers();
     renderAdminPosts();
+    loadAdminBirthdays();
   } catch (error) {
     if (error.status === 401 || error.status === 403) {
       showMessage("Admin session is no longer active.");
@@ -2051,12 +2052,126 @@ function openEditProfile() {
   if (nameInput) nameInput.value = user.name;
   const bioInput = document.getElementById("editBio");
   if (bioInput) bioInput.value = user.bio;
+  loadMyBirthdayIntoForm();
   document.getElementById("editModal")?.classList.remove("hidden");
+}
+
+/* =========================================================
+   PRIVATE BIRTHDAY
+   A member's own birthday (set in Edit Profile). Only that member
+   and the admin can ever see it — the server enforces this.
+========================================================= */
+
+let loadedBirthday = null; // what the server had when the form was opened
+
+function birthdayFormEls() {
+  return {
+    month: document.getElementById("editBirthMonth"),
+    day: document.getElementById("editBirthDay"),
+    year: document.getElementById("editBirthYear")
+  };
+}
+
+async function loadMyBirthdayIntoForm() {
+  const els = birthdayFormEls();
+  loadedBirthday = null;
+  if (els.month) els.month.value = "";
+  if (els.day) els.day.value = "";
+  if (els.year) els.year.value = "";
+  try {
+    const b = await api("/api/me/birthday");
+    if (!b) return;
+    loadedBirthday = b;
+    if (els.month) els.month.value = String(b.month);
+    if (els.day) els.day.value = String(b.day);
+    if (els.year) els.year.value = b.year ? String(b.year) : "";
+  } catch (error) {
+    /* leave the form empty — nothing will be saved unless the member fills it in */
+  }
+}
+
+// Returns { skip: true }, { error: "..." } or { value: {month, day, year} }
+function readBirthdayForm() {
+  const els = birthdayFormEls();
+  const month = els.month?.value || "";
+  const day = els.day?.value || "";
+  const year = els.year?.value || "";
+  if (!month && !day && !year) return { skip: true };
+  if (!month || !day) return { error: "Please choose both a month and a day for your birthday." };
+  const value = { month: Number(month), day: Number(day), year: year ? Number(year) : null };
+  if (loadedBirthday && loadedBirthday.month === value.month && loadedBirthday.day === value.day &&
+      (loadedBirthday.year || null) === value.year) return { skip: true };
+  return { value };
+}
+
+async function clearMyBirthday() {
+  try {
+    await api("/api/me/birthday", { method: "DELETE" });
+    loadedBirthday = null;
+    const els = birthdayFormEls();
+    if (els.month) els.month.value = "";
+    if (els.day) els.day.value = "";
+    if (els.year) els.year.value = "";
+    showMessage("Birthday removed.");
+  } catch (error) {
+    showMessage(error.message || "Could not remove your birthday.");
+  }
+}
+
+const BIRTHDAY_MONTHS = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+function birthdayNextDate(month, day, year) {
+  let d = day;
+  // Feb 29 birthdays are celebrated on Feb 28 in non-leap years.
+  if (month === 2 && day === 29 && new Date(year, 2, 0).getDate() === 28) d = 28;
+  return new Date(year, month - 1, d);
+}
+
+function birthdayDaysUntil(month, day) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let next = birthdayNextDate(month, day, today.getFullYear());
+  if (next < today) next = birthdayNextDate(month, day, today.getFullYear() + 1);
+  return Math.round((next - today) / 86400000);
+}
+
+async function loadAdminBirthdays() {
+  const container = document.getElementById("adminBirthdaysList");
+  if (!container || !session?.isAdmin) return;
+  try {
+    const list = await api("/api/admin/birthdays");
+    if (!list.length) {
+      container.innerHTML = `<p class="no-results">No birthdays added yet.</p>`;
+      return;
+    }
+    const rows = list
+      .map(b => ({ ...b, daysUntil: birthdayDaysUntil(b.month, b.day) }))
+      .sort((a, b) => a.daysUntil - b.daysUntil);
+    container.innerHTML = rows.map(b => {
+      const when = b.daysUntil === 0 ? "Today 🎂" : b.daysUntil === 1 ? "Tomorrow" : `in ${b.daysUntil} days`;
+      const nextYear = new Date(Date.now() + b.daysUntil * 86400000).getFullYear();
+      const turning = b.year ? ` · turns ${nextYear - b.year}` : "";
+      return `
+        <div class="admin-user-row">
+          <div class="avatar">${b.avatarImage ? `<img src="${escapeHTML(b.avatarImage)}" alt="${escapeHTML(b.name)}">` : escapeHTML(b.avatar || "U")}</div>
+          <div class="admin-user-info">
+            <strong>${escapeHTML(b.name)}</strong>
+            <span>@${escapeHTML(b.username)} · ${BIRTHDAY_MONTHS[b.month - 1]} ${b.day}${turning}</span>
+          </div>
+          <div class="admin-user-actions"><span class="admin-badge${b.daysUntil === 0 ? "" : " member"}">${when}</span></div>
+        </div>`;
+    }).join("");
+  } catch (error) {
+    container.innerHTML = `<p class="no-results">Could not load birthdays.</p>`;
+  }
 }
 
 function saveProfile() {
   const user = currentUser();
   if (!user) return;
+  const birthday = readBirthdayForm();
+  if (birthday.error) { showMessage(birthday.error); return; }
   const name = document.getElementById("editName")?.value.trim();
   const bio = document.getElementById("editBio")?.value.trim();
   if (name) {
@@ -2069,6 +2184,11 @@ function saveProfile() {
   saveData();
   renderEverything();
   closeModal("editModal");
+  if (birthday.value) {
+    api("/api/me/birthday", { method: "PUT", body: birthday.value })
+      .then(() => { loadedBirthday = birthday.value; })
+      .catch(error => showMessage(error.message || "Could not save your birthday."));
+  }
   showMessage("Profile updated!");
 }
 
