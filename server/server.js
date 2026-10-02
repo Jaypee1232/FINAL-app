@@ -1,1014 +1,2144 @@
-console.log("BUILD 2026-10-02-b store-removeUndefined");
+/* =========================================
+   NEA'S BOARDING HORSE — FRONTEND JAVASCRIPT
+   (Community edition — everyone is automatically
+   connected, one shared feed, notifications for all)
+
+   FINAL MERGED VERSION
+   This file combines and replaces both older copies of
+   app.js. Only include THIS file in your HTML — loading
+   more than one copy of this script on the same page
+   causes "Identifier ... has already been declared" errors
+   which silently break login and everything else.
+========================================= */
+
 /* =========================================================
-   NEA'S BOARDING HORSE — BACKEND SERVER
-   Express + Firestore + Cloudinary.
-
-   What this server does:
-   - Owns real user credentials (bcrypt-hashed, never sent
-     to the browser).
-   - Owns the shared app data (users' public profiles, posts,
-     comments, notifications) in Firestore state document, so every
-     member who logs in sees the SAME shared community feed
-     instead of a private-per-browser copy.
-   - Issues an httpOnly session cookie (JWT) on login so the
-     frontend never has to store or check passwords itself.
-
-   Run locally:
-     cd server
-     npm install
-     npm start
-   Then open http://localhost:3000
-
-   See ../README.md for deployment + admin instructions.
+   ICONS
+   Small inline SVG set, applied to any element with a
+   data-icon attribute. Keeps markup icon-agnostic and lets
+   both the static HTML and the JS-generated post cards
+   share one source of truth.
 ========================================================= */
 
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
-const express = require("express");
-const cookieParser = require("cookie-parser");
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
-const { v2: cloudinary } = require("cloudinary");
+const ICON_PATHS = {
+  home: '<path d="M3 9.5L12 3l9 6.5"/><path d="M5 10v10a1 1 0 0 0 1 1h3v-6h6v6h3a1 1 0 0 0 1-1V10"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  sun: '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
+  camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+  lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a20.3 20.3 0 0 1 5.06-6.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a20.3 20.3 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+  video: '<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  poll: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+  moreHorizontal: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  messageCircle: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+  repeat: '<path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  bookmark: '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
+  edit: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  shield: '<path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3z"/><path d="M9 12l2 2 4-4"/>'
+};
 
-// ---------------------------------------------------------
-// Load a .env file if there is one (server/.env or the project
-// root), so "copy .env.example to .env" actually works. Real
-// environment variables always win, and blank values are ignored.
-// ---------------------------------------------------------
-(function loadEnvFile() {
-  for (const file of [path.join(__dirname, ".env"), path.join(__dirname, "..", ".env")]) {
-    if (!fs.existsSync(file)) continue;
-    fs.readFileSync(file, "utf8").split(/\r?\n/).forEach(line => {
-      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-      if (!m) return;
-      let value = m[2];
-      if (/^(".*"|'.*')$/.test(value)) value = value.slice(1, -1);
-      if (value !== "" && process.env[m[1]] === undefined) process.env[m[1]] = value;
-    });
-    break;
+function iconSVG(name, options = {}) {
+  const filled = options.filled;
+  const inner = ICON_PATHS[name] || "";
+  const fill = filled ? "currentColor" : "none";
+  return `<svg viewBox="0 0 24 24" fill="${fill}" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+}
+
+function applyStaticIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach(el => {
+    const name = el.getAttribute("data-icon");
+    if (ICON_PATHS[name]) {
+      el.innerHTML = iconSVG(name);
+    }
+  });
+}
+
+/* =========================================================
+   MEDIA UPLOAD
+   Sends a compressed image/video (as a data URL) to the
+   server, which forwards it to Cloudinary and hands back a
+   normal https URL. That URL — not the file itself — is what
+   gets saved into posts/albums/profiles from here on.
+========================================================= */
+
+async function uploadMedia(dataUrl, kind = "image") {
+  const result = await api("/api/upload", { method: "POST", body: { dataUrl, kind } });
+  return result.url;
+}
+
+/* =========================================================
+   THEME (light / dark / system)
+========================================================= */
+
+const THEME_KEY = "neas_boarding_horse_theme";
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.querySelectorAll("[data-theme-icon]").forEach(el => {
+    el.innerHTML = iconSVG(theme === "dark" ? "sun" : "moon");
+  });
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  const next = current === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    localStorage.setItem(THEME_KEY, next);
+  } catch (error) {
+    console.error("Could not save theme preference.", error);
   }
-})();
+}
 
-const DATA_DIR = path.join(__dirname, "data");
-// Only the local-disk upload fallback (no Cloudinary configured) still uses
-// the filesystem — users/posts/social/credentials now live in Firestore.
-const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
-const PUBLIC_DIR = path.join(__dirname, "..", "public");
+function initTheme() {
+  let saved = null;
+  try {
+    saved = localStorage.getItem(THEME_KEY);
+  } catch (error) {
+    console.error("Could not read theme preference.", error);
+  }
+  const prefersDark = typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(saved || (prefersDark ? "dark" : "light"));
+}
 
-const PORT = process.env.PORT || 3000;
-const NODE_ENV = process.env.NODE_ENV || "development";
-const COOKIE_NAME = "nbh_session";
-const SESSION_DAYS = 30;
+/* =========================================================
+   DATA
+   The app's shared data (member profiles, posts, comments,
+   notifications) now lives on the SERVER — every member who
+   logs in sees the same community feed. This file talks to
+   it through a small fetch() wrapper (see API below) instead
+   of reading/writing localStorage directly.
+========================================================= */
+
+const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "😡"];
+
+// Videos now go to Cloudinary instead of being embedded as
+// base64 in Firestore, so this only needs to stay under the
+// server's request body limit (see express.json limit in
+// server.js), not under a "keep the JSON file small" limit.
 const MAX_VIDEO_BYTES = 15 * 1024 * 1024;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-// ---------------------------------------------------------
-// JWT secret: MUST be set via env var in production. A random
-// one is generated for local/dev use so it "just works" out
-// of the box, but it changes every restart (logging everyone
-// out) unless you set JWT_SECRET yourself.
-// ---------------------------------------------------------
-let JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  JWT_SECRET = crypto.randomBytes(48).toString("hex");
-  console.warn(
-    "\n[WARN] No JWT_SECRET set in the environment.\n" +
-    "       Using a random one for this run only — every restart will log everyone out.\n" +
-    "       Set a permanent JWT_SECRET in your hosting provider's environment variables before going live.\n"
-  );
-}
+/* =========================================================
+   API
+========================================================= */
 
-// ---------------------------------------------------------
-// Cloud media storage (Cloudinary)
-// Photos/videos are uploaded here instead of being embedded
-// as base64 inside Firestore — keeps the database
-// small and keeps large media off the Render server itself.
-// ---------------------------------------------------------
-const CLOUDINARY_CONFIGURED = !!(
-  process.env.CLOUDINARY_CLOUD_NAME &&
-  process.env.CLOUDINARY_API_KEY &&
-  process.env.CLOUDINARY_API_SECRET
-);
-
-if (CLOUDINARY_CONFIGURED) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-    secure: true
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    method: options.method || "GET",
+    headers: options.body ? { "Content-Type": "application/json" } : undefined,
+    credentials: "include",
+    body: options.body ? JSON.stringify(options.body) : undefined
   });
-} else {
-  console.warn(
-    "\n[WARN] Cloudinary env vars are not set (CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET).\n" +
-    "       Uploads will be REJECTED until Cloudinary is set (or ALLOW_LOCAL_UPLOADS=true for local testing only).\n" +
-    "       Many hosts wipe the disk on every deploy, so local files would be lost. See README.md.\n"
-  );
-}
 
-// ---------------------------------------------------------
-// Seed data — used only the FIRST time the server runs
-// (i.e. when Firestore credentials document doesn't exist yet).
-// After that, everything lives in the JSON files on disk
-// and this is ignored.
-// ---------------------------------------------------------
-function seedPassword(envKey) {
-  return process.env[envKey] || crypto.randomBytes(12).toString("base64url");
-}
-
-const SEED_MEMBERS = [
-  { username: "Jaypee@nbh", password: seedPassword("SEED_PASSWORD_JAYPEE"), name: "Jaypee", bio: "Member of Nea's Boarding Horse.", avatar: "J" },
-  { username: "Nea@nbh",    password: seedPassword("SEED_PASSWORD_NEA"),    name: "Nea",    bio: "Member of Nea's Boarding Horse.", avatar: "N" },
-  { username: "Jasmin@nbh",password: seedPassword("SEED_PASSWORD_JASMIN"),name: "Jasmin",bio: "Member of Nea's Boarding Horse.", avatar: "J" },
-  { username: "Joshua@nbh", password: seedPassword("SEED_PASSWORD_JOSHUA"), name: "Joshua", bio: "Member of Nea's Boarding Horse.", avatar: "J" },
-  { username: "Bjay@nbh",   password: seedPassword("SEED_PASSWORD_BJAY"),   name: "Bjay",   bio: "Member of Nea's Boarding Horse.", avatar: "B" },
-  { username: "Axel@nbh",   password: seedPassword("SEED_PASSWORD_AXEL"),   name: "Axel",   bio: "Member of Nea's Boarding Horse.", avatar: "A" }
-];
-
-if (NODE_ENV !== "production") {
-  const generatedSeed = SEED_MEMBERS.filter(m => !process.env[{
-    "Jaypee@nbh":"SEED_PASSWORD_JAYPEE", "Nea@nbh":"SEED_PASSWORD_NEA",
-    "Jasmin@nbh":"SEED_PASSWORD_JASMIN", "Joshua@nbh":"SEED_PASSWORD_JOSHUA",
-    "Bjay@nbh":"SEED_PASSWORD_BJAY", "Axel@nbh":"SEED_PASSWORD_AXEL"
-  }[m.username]]);
-  if (generatedSeed.length) {
-    console.warn("[DEV] Generated first-seed member passwords:");
-    generatedSeed.forEach(m => console.warn(`       ${m.username}: ${m.password}`));
-  }
-}
-
-if (NODE_ENV === "production") {
-  const requiredSeedVars = [
-    "SEED_PASSWORD_JAYPEE", "SEED_PASSWORD_NEA", "SEED_PASSWORD_JASMIN",
-    "SEED_PASSWORD_JOSHUA", "SEED_PASSWORD_BJAY", "SEED_PASSWORD_AXEL"
-  ];
-  const missingSeed = requiredSeedVars.filter(key => !process.env[key]);
-  if (missingSeed.length) {
-    throw new Error(`Missing production seed password environment variables: ${missingSeed.join(", ")}`);
-  }
-}
-
-// The old frontend let anyone in by typing "admin" as the
-// username with NO password check at all — that was a real
-// security hole. It's fixed here: admin is a normal seeded
-// account that requires a real password like everyone else.
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || crypto.randomBytes(12).toString("base64url");
-if (!process.env.ADMIN_PASSWORD && NODE_ENV !== "production") {
-  console.warn(`[DEV] Generated admin password for first seed: ${ADMIN_PASSWORD}`);
-}
-if (!process.env.ADMIN_PASSWORD && NODE_ENV === "production") {
-  throw new Error("ADMIN_PASSWORD must be set in production.");
-}
-SEED_MEMBERS.push({
-  username: "admin",
-  password: ADMIN_PASSWORD,
-  name: "Admin",
-  bio: "Site administrator.",
-  avatar: "A",
-  isAdmin: true
-});
-
-function defaultState() {
-  return {
-    users: SEED_MEMBERS.map(m => ({
-      username: m.username,
-      name: m.name,
-      bio: m.bio,
-      avatar: m.avatar,
-      avatarImage: null,
-      bannerImage: null,
-      isAdmin: !!m.isAdmin
-    })),
-    posts: [
-      {
-        id: 1,
-        name: "Nea",
-        username: "Nea@nbh",
-        avatar: "N",
-        text: "Grateful for the little things today \u2728\nA productive day and good vibes.",
-        image: "https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1000&q=80",
-        // reactions/shares are recomputed from real members' own actions
-        // every time anyone saves (see the /api/state handler below), so a
-        // decorative starting number here would just vanish on the first
-        // real reaction/repost. Start the demo post at zero — real numbers
-        // appear as soon as members actually use it.
-        reactions: {},
-        comments: 0,
-        commentsList: [],
-        shares: 0,
-        time: "2h ago"
-      }
-    ],
-    social: {}
-  };
-}
-
-function defaultSocialFor() {
-  return {
-    notifications: [],
-    albums: [],
-    reposts: [],
-    // Per-member state that must NEVER be a single field on a shared post
-    // object (that was the old bug: one member's reaction/save overwrote
-    // what every other member saw). savedPostIds is this member's own
-    // bookmarks; myReactions maps postId -> the emoji THIS member picked.
-    savedPostIds: [],
-    myReactions: {}
-  };
-}
-
-// ---------------------------------------------------------
-// Database: Firestore (see firestore-store.js).
-// readState/writeState/readCredentials/writeCredentials are
-// all ASYNC now (Firestore is a network call, unlike the old
-// synchronous file reads/writes) — every route below
-// that touches them is an async handler wrapped in ah().
-// ---------------------------------------------------------
-const store = require("./firestore-store");
-const { readState, writeState, readCredentials, writeCredentials } = store;
-
-function findCredentialKey(credentials, username) {
-  const target = String(username || "").trim().toLowerCase();
-  return Object.keys(credentials).find(k => k.toLowerCase() === target) || null;
-}
-
-// Wrap an async Express handler so a rejected promise (e.g. a Firestore
-// hiccup) sends a 500 instead of leaving the request hanging forever.
-function ah(handler) {
-  return (req, res, next) => {
-    Promise.resolve(handler(req, res, next)).catch(err => {
-      console.error("[route error]", err);
-      if (!res.headersSent) res.status(500).json({ error: "Something went wrong. Please try again." });
-    });
-  };
-}
-
-// ---------------------------------------------------------
-// App setup
-// ---------------------------------------------------------
-const app = express();
-app.set("trust proxy", 1); // needed on Render/Railway/Heroku-style hosts so secure cookies work
-app.use(express.json({ limit: "25mb" })); // media is sent to this server as base64 before being forwarded to Cloudinary
-app.use(cookieParser());
-app.disable("x-powered-by");
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "SAMEORIGIN");
-  res.setHeader("Referrer-Policy", "same-origin");
-  if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
-  next();
-});
-
-function requireAuth(req, res, next) {
-  const token = req.cookies[COOKIE_NAME];
-  if (!token) return res.status(401).json({ error: "Not logged in." });
+  let payload = null;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.username = payload.username;
-  } catch (err) {
-    return res.status(401).json({ error: "Session expired. Please log in again." });
-  }
-
-  readState().then(state => {
-    const user = state.users.find(u => String(u.username).toLowerCase() === String(req.username).toLowerCase());
-    if (!user) return res.status(401).json({ error: "Account no longer exists." });
-    if (user.disabled) return res.status(403).json({ error: "This account has been disabled by an administrator." });
-    req.user = user;
-    req.isAdmin = !!user.isAdmin;
-    next();
-  }).catch(err => {
-    console.error("[auth error]", err);
-    if (!res.headersSent) res.status(500).json({ error: "Could not verify your session." });
-  });
-}
-
-function requireAdmin(req, res, next) {
-  requireAuth(req, res, () => {
-    if (!req.isAdmin) return res.status(403).json({ error: "Admin access required." });
-    next();
-  });
-}
-
-function setSessionCookie(res, username) {
-  const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: `${SESSION_DAYS}d` });
-  res.cookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: NODE_ENV === "production",
-    maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000
-  });
-}
-
-// ---------------------------------------------------------
-// AUTH ROUTES
-// ---------------------------------------------------------
-
-// Slow down password guessing: 8 wrong tries per account (per address)
-// in 15 minutes, then a short lock-out. A correct login clears the count.
-const loginAttempts = new Map();
-const MAX_LOGIN_ATTEMPTS = 8;
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of loginAttempts) if (v.resetAt <= now) loginAttempts.delete(k);
-}, 10 * 60 * 1000).unref();
-
-function loginLimiter(req, res, next) {
-  const now = Date.now();
-  const key = (req.ip || "unknown") + "|" + String((req.body && req.body.username) || "").toLowerCase();
-  let entry = loginAttempts.get(key);
-  if (!entry || entry.resetAt <= now) {
-    entry = { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-    loginAttempts.set(key, entry);
-  }
-  if (entry.count >= MAX_LOGIN_ATTEMPTS) {
-    const minutes = Math.ceil((entry.resetAt - now) / 60000);
-    return res.status(429).json({ error: `Too many login attempts. Please try again in ${minutes} minute${minutes === 1 ? "" : "s"}.` });
-  }
-  res.on("finish", () => {
-    if (res.statusCode === 401) entry.count++;
-    else if (res.statusCode < 400) loginAttempts.delete(key);
-  });
-  next();
-}
-
-app.post("/api/auth/login", loginLimiter, ah(async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password are required." });
-  }
-
-  const credentials = await readCredentials();
-  const key = findCredentialKey(credentials, username);
-  if (!key) {
-    return res.status(401).json({ error: "Incorrect username or password." });
-  }
-
-  if (!bcrypt.compareSync(password, credentials[key])) {
-    return res.status(401).json({ error: "Incorrect username or password." });
-  }
-
-  const state = await readState();
-  let user = state.users.find(u => u.username.toLowerCase() === key.toLowerCase());
-  if (!user) {
-    // Credential exists but user profile got removed somehow — recreate a minimal one.
-    user = { username: key, name: key, bio: "", avatar: key.charAt(0).toUpperCase(), avatarImage: null, bannerImage: null, isAdmin: false };
-    state.users.push(user);
-    await writeState(state);
-  }
-
-  if (user.disabled) {
-    return res.status(403).json({ error: "This account has been disabled by an administrator." });
-  }
-
-  if (!state.social[user.username]) {
-    state.social[user.username] = defaultSocialFor();
-  }
-  state.social[user.username].notifications.unshift({
-    name: user.name,
-    avatar: user.avatar,
-    text: "logged in",
-    time: "Just now",
-    unread: true
-  });
-  await writeState(state);
-
-  setSessionCookie(res, user.username);
-  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin });
-}));
-
-app.post("/api/auth/logout", (req, res) => {
-  res.clearCookie(COOKIE_NAME);
-  res.json({ ok: true });
-});
-
-app.get("/api/auth/me", requireAuth, ah(async (req, res) => {
-  const state = await readState();
-  const user = state.users.find(u => u.username === req.username);
-  if (!user) return res.status(401).json({ error: "Account no longer exists." });
-  res.json({ username: user.username, name: user.name, isAdmin: !!user.isAdmin });
-}));
-
-app.post("/api/auth/change-password", requireAuth, ah(async (req, res) => {
-  const { currentPassword, newPassword } = req.body || {};
-  if (!newPassword || String(newPassword).length < 8) {
-    return res.status(400).json({ error: "New password must be at least 8 characters." });
-  }
-  if (currentPassword === newPassword) {
-    return res.status(400).json({ error: "New password must be different from your current password." });
-  }
-
-  const credentials = await readCredentials();
-  const key = findCredentialKey(credentials, req.username);
-  if (!key) return res.status(404).json({ error: "Account not found." });
-
-  if (!bcrypt.compareSync(currentPassword || "", credentials[key])) {
-    return res.status(401).json({ error: "Current password is incorrect." });
-  }
-
-  credentials[key] = bcrypt.hashSync(newPassword, 10);
-  await writeCredentials(credentials);
-  res.json({ ok: true });
-}));
-
-// ---------------------------------------------------------
-// MEDIA UPLOAD (Cloudinary)
-// The frontend sends a data URL (same format it already
-// produces after compressing an image or reading a video
-// file). This route uploads it to Cloudinary and returns a
-// normal https URL, which is what actually gets saved into
-// Firestore — not the file itself.
-// ---------------------------------------------------------
-app.post("/api/upload", requireAuth, async (req, res) => {
-  const { dataUrl, kind } = req.body || {};
-  if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) {
-    return res.status(400).json({ error: "No file data received." });
-  }
-
-  const match = /^data:([a-z]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
-  if (!match) return res.status(400).json({ error: "Invalid file data." });
-  const mime = match[1].toLowerCase();
-  const allowedImages = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-  const allowedVideos = new Set(["video/mp4", "video/webm", "video/quicktime"]);
-  const isVideo = kind === "video";
-  const allowed = isVideo ? allowedVideos.has(mime) : allowedImages.has(mime);
-  if (!allowed) return res.status(400).json({ error: "That file type isn't supported." });
-  const estimatedBytes = Math.floor(match[2].length * 3 / 4);
-  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-  if (estimatedBytes > maxBytes) {
-    return res.status(413).json({ error: `File is too large. Maximum allowed is ${isVideo ? 15 : 8}MB.` });
-  }
-
-  if (!CLOUDINARY_CONFIGURED && process.env.ALLOW_LOCAL_UPLOADS !== "true") {
-    // Hosts like Render wipe the disk on restart/redeploy, so files saved locally
-    // would vanish while the post stays. Fail loudly instead of losing media silently.
-    console.error("[upload] Rejected: Cloudinary is not configured (set CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET).");
-    return res.status(503).json({ error: "Media storage isn't set up on the server yet, so this file can't be saved. Please tell the admin." });
-  }
-
-  if (!CLOUDINARY_CONFIGURED) {
-    // Local fallback (development only, needs ALLOW_LOCAL_UPLOADS=true): keep the file on this server's disk (safe types only, random name).
-    const EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" };
-    const m = match;
-    if (!m || !EXT[m[1]]) {
-      return res.status(400).json({ error: "That file type isn't supported." });
-    }
-    try {
-      fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-      const name = crypto.randomBytes(16).toString("hex") + "." + EXT[m[1]];
-      await fs.promises.writeFile(path.join(UPLOAD_DIR, name), Buffer.from(m[2], "base64"));
-      return res.json({ url: "/uploads/" + name });
-    } catch (error) {
-      console.error("[local upload error]", error);
-      return res.status(500).json({ error: "Couldn't save the file. Please try again." });
-    }
-  }
-
-  try {
-    const result = await cloudinary.uploader.upload(dataUrl, {
-      folder: "neas-boarding-horse",
-      resource_type: kind === "video" ? "video" : "auto"
-    });
-    res.json({ url: result.secure_url });
+    payload = await response.json();
   } catch (error) {
-    console.error("[cloudinary upload error]", error);
-    res.status(502).json({ error: "Upload to media storage failed. Please try again." });
+    payload = null;
   }
-});
 
-// ---------------------------------------------------------
-// SHARED APP STATE (users' public profiles, posts, social)
-// ---------------------------------------------------------
-
-app.get("/api/state", requireAuth, ah(async (req, res) => {
-  const state = await readState();
-  const ownSocial = state.social?.[req.username] || defaultSocialFor();
-  // Members need the shared public feed and their own private social data.
-  // Do not send other members' notifications, saved posts, albums, or reactions.
-  res.json({
-    users: state.users.map(u => ({
-      username: u.username, name: u.name, bio: u.bio || "", avatar: u.avatar || "U",
-      avatarImage: u.avatarImage || null, bannerImage: u.bannerImage || null,
-      isAdmin: !!u.isAdmin, disabled: !!u.disabled
-    })),
-    posts: state.posts,
-    social: { [req.username]: ownSocial },
-    rev: Number(state.rev) || 0
-  });
-}));
-
-// Same reaction set the frontend offers — used to reject junk emoji keys
-// and to recompute reaction counts from scratch below.
-const REACTIONS = ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDE21"];
-
-const MAX_TEXT_LEN = 5000;
-const MAX_COMMENT_LEN = 2000;
-const MAX_NAME_LEN = 200;
-const MAX_IMAGES_PER_POST = 10;
-const MAX_NEW_NOTIFICATIONS_PER_SAVE = 5; // per OTHER member being notified, per save
-
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
+  if (!response.ok) {
+    const message = (payload && payload.error) || `Request failed (${response.status}).`;
+    const failure = new Error(message);
+    failure.status = response.status;
+    failure.payload = payload;
+    throw failure;
+  }
+  return payload;
 }
 
-function sameJSON(a, b) {
+/* =========================================================
+   STATE
+========================================================= */
+
+// `data` mirrors what used to be stored in localStorage, minus
+// anything session-specific (currentUser is tracked separately
+// below as `session`, since it's per-browser, not shared).
+let data = { users: [], posts: [], social: {} };
+
+// The logged-in member for THIS browser/session. Set after a
+// successful login or a valid session cookie check.
+let session = null;
+
+let activePostId = null;
+let activeAlbumId = null;
+let composerImages = [];
+let composerVideo = null;
+let activeProfileTab = "posts";
+let viewingUsername = null;
+let adminOverview = { users: [], posts: [] };
+
+/* =========================================================
+   STORAGE (now synced to the server instead of localStorage)
+========================================================= */
+
+function ensureSocialFor(username) {
+  if (!username) {
+    return { notifications: [], albums: [], reposts: [], savedPostIds: [], myReactions: {} };
+  }
+  if (!data.social) data.social = {};
+  if (!data.social[username]) {
+    data.social[username] = { notifications: [], albums: [], reposts: [], savedPostIds: [], myReactions: {} };
+  }
+  const social = data.social[username];
+  if (!Array.isArray(social.notifications)) social.notifications = [];
+  if (!Array.isArray(social.albums)) social.albums = [];
+  if (!Array.isArray(social.reposts)) social.reposts = [];
+  // These are PER-MEMBER by design: which emoji *this* member picked for a
+  // post, and whether *this* member saved it. They must never be a single
+  // field on the shared post object — that used to mean one member's
+  // reaction/save silently applied to (and overwrote) every other member's view.
+  if (!Array.isArray(social.savedPostIds)) social.savedPostIds = [];
+  if (!social.myReactions || typeof social.myReactions !== "object") social.myReactions = {};
+  return social;
+}
+
+// Saves run one at a time so they always reach the server in order.
+let saveChain = Promise.resolve();
+let savesInFlight = 0;
+
+function saveData() {
+  savesInFlight++;
+  saveChain = saveChain.then(() => attemptSave(3));
+  return true;
+}
+
+async function attemptSave(retriesLeft) {
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    const result = await api("/api/state", { method: "POST", body: data });
+    if (result && typeof result.rev === "number") data.rev = result.rev;
   } catch (error) {
-    return false;
-  }
-}
-
-function clampString(value, maxLen) {
-  return String(value == null ? "" : value).slice(0, maxLen);
-}
-
-function clampStringArray(value, maxItems, maxLen) {
-  if (!Array.isArray(value)) return [];
-  return value.filter(v => typeof v === "string").slice(0, maxItems).map(v => clampString(v, maxLen));
-}
-
-// Builds the one post object a member is allowed to have produced, given
-// what they sent (incomingPost) and — for edits — what the server already
-// has (currentPost). Content authorship (who wrote it, what it says, its
-// media) can only be set by the post's own author (or an admin); every
-// other member's save can only ever leave those fields untouched.
-function sanitizePost(incomingPost, currentPost, req, authorProfile) {
-  const isOwnerOrAdmin = currentPost
-    ? (currentPost.username === req.username || req.isAdmin)
-    : true; // brand-new post: ownership is enforced by forcing author fields below
-
-  const base = currentPost ? { ...currentPost } : {};
-
-  if (isOwnerOrAdmin) {
-    // New posts always get their author identity from the server's own
-    // record for the logged-in member — never trusted from the client —
-    // so nobody can publish a post that appears to be from someone else.
-    base.username = currentPost ? currentPost.username : req.username;
-    base.name = currentPost ? currentPost.name : authorProfile.name;
-    base.avatar = currentPost ? currentPost.avatar : authorProfile.avatar;
-    base.avatarImage = currentPost ? currentPost.avatarImage : (authorProfile.avatarImage || null);
-    base.text = clampString(incomingPost.text, MAX_TEXT_LEN);
-    base.time = currentPost ? base.time : "Just now";
-    base.image = typeof incomingPost.image === "string" ? clampString(incomingPost.image, 2000) : null;
-    base.images = Array.isArray(incomingPost.images) ? clampStringArray(incomingPost.images, MAX_IMAGES_PER_POST, 2000) : undefined;
-    if (!base.images || !base.images.length) delete base.images;
-    base.video = typeof incomingPost.video === "string" ? clampString(incomingPost.video, 2000) : null;
-    if (!base.video) delete base.video;
-    if (!base.image) delete base.image;
-  }
-  // Non-owners editing an existing post: `base` already equals currentPost,
-  // so authorship/text/media are left exactly as the server had them.
-
-  // Comments: anyone may add a new comment, but nobody — not even the
-  // post's own author — may rewrite or remove a comment that's already
-  // there. So the accepted list is always "the old list, unchanged" plus
-  // whatever *new* comments were appended after it.
-  const oldComments = (currentPost && Array.isArray(currentPost.commentsList)) ? currentPost.commentsList : [];
-  const incomingComments = Array.isArray(incomingPost.commentsList) ? incomingPost.commentsList : [];
-  const oldPrefixMatches = oldComments.every((c, i) => sameJSON(c, incomingComments[i]));
-  let finalComments = oldComments;
-  if (oldPrefixMatches && incomingComments.length > oldComments.length) {
-    const appended = incomingComments.slice(oldComments.length).map(c => ({
-      // A comment's identity is always the CURRENT server-known profile of
-      // whoever is saving right now — never trusted from the client — so
-      // nobody can post a comment that looks like it came from someone else.
-      name: authorProfile.name,
-      avatar: authorProfile.avatar,
-      avatarImage: authorProfile.avatarImage || null,
-      text: clampString(c && c.text, MAX_COMMENT_LEN),
-      time: "Just now"
-    })).filter(c => c.text.trim().length > 0);
-    finalComments = oldComments.concat(appended);
-  }
-  base.commentsList = finalComments;
-  base.comments = finalComments.length;
-
-  // reactions (aggregate counts) and shares are recomputed from every
-  // member's own per-member state further down — never trusted here.
-  return base;
-}
-
-// A member's own social slice (data.social[req.username]) they may set
-// however they like, as long as it has the right shape — clearing their
-// notifications, renaming an album, saving/unsaving a post, etc. are all
-// fine because it only ever affects THEM.
-function sanitizeOwnSocial(incoming) {
-  const src = isPlainObject(incoming) ? incoming : {};
-  const notifications = Array.isArray(src.notifications) ? src.notifications : [];
-  const albums = Array.isArray(src.albums) ? src.albums : [];
-  const reposts = Array.isArray(src.reposts) ? src.reposts : [];
-  const savedPostIds = Array.isArray(src.savedPostIds) ? src.savedPostIds : [];
-  const myReactions = isPlainObject(src.myReactions) ? src.myReactions : {};
-
-  return {
-    notifications: notifications.filter(isPlainObject).slice(0, 300).map(n => ({
-      name: clampString(n.name, MAX_NAME_LEN),
-      avatar: clampString(n.avatar, 10),
-      avatarImage: typeof n.avatarImage === "string" ? clampString(n.avatarImage, 2000) : null,
-      text: clampString(n.text, 300),
-      time: clampString(n.time, 100),
-      unread: !!n.unread,
-      postId: typeof n.postId === "number" ? n.postId : null
-    })),
-    albums: albums.filter(isPlainObject).slice(0, 100).map(a => ({
-      id: clampString(a.id, 100) || ("album_" + crypto.randomBytes(6).toString("hex")),
-      name: clampString(a.name, 200),
-      images: clampStringArray(a.images, 500, 2000)
-    })),
-    // Deduplicated by postId: a single member reposting the same post
-    // twice must still only ever count as ONE share from them. Without
-    // this, a member's own (fully-trusted) slice could list the same
-    // postId many times and inflate that post's share count for everyone.
-    reposts: (() => {
-      const seenPostIds = new Set();
-      const deduped = [];
-      for (const r of reposts) {
-        if (!isPlainObject(r) || typeof r.postId !== "number" || seenPostIds.has(r.postId)) continue;
-        seenPostIds.add(r.postId);
-        deduped.push({ postId: r.postId, time: clampString(r.time, 100) });
-      }
-      return deduped.slice(0, 2000);
-    })(),
-    savedPostIds: [...new Set(savedPostIds.filter(id => typeof id === "number"))].slice(0, 5000),
-    myReactions: Object.fromEntries(
-      Object.entries(myReactions)
-        .filter(([, emoji]) => REACTIONS.includes(emoji))
-        .slice(0, 5000)
-    )
-  };
-}
-
-// Another member's social slice: everything stays exactly as the server
-// already has it, except this save is allowed to APPEND a handful of new
-// notifications to it (that's how "so-and-so reacted/commented/reposted
-// your post" reaches the post's owner) — never edit or remove one that's
-// already there, and never touch their albums/reposts/saves/reactions.
-function mergeOtherMemberSocial(current) {
-  // Other members' private social data is server-owned. The current client
-  // is never allowed to rewrite or append to another member's notifications.
-  const base = current ? { ...current } : defaultSocialFor();
-  base.notifications = Array.isArray(base.notifications) ? base.notifications : [];
-  base.albums = Array.isArray(base.albums) ? base.albums : [];
-  base.reposts = Array.isArray(base.reposts) ? base.reposts : [];
-  base.savedPostIds = Array.isArray(base.savedPostIds) ? base.savedPostIds : [];
-  base.myReactions = isPlainObject(base.myReactions) ? base.myReactions : {};
-  return base;
-}
-
-app.post("/api/state", requireAuth, ah(async (req, res) => {
-  const incoming = req.body;
-  if (!incoming || !Array.isArray(incoming.users) || !Array.isArray(incoming.posts)) {
-    return res.status(400).json({ error: "Malformed state payload." });
-  }
-
-  const current = await readState();
-  const currentRev = Number(current.rev) || 0;
-
-  // The sender's copy is out of date (someone else saved first). Saving it would
-  // silently wipe their changes, so refuse and hand back the fresh feed instead.
-  if (typeof incoming.rev === "number" && incoming.rev !== currentRev) {
-    return res.status(409).json({
-      error: "Someone else just updated the feed. It has been refreshed, so please try again.",
-      state: current
-    });
-  }
-
-  const requester = current.users.find(u => u.username === req.username);
-  if (!requester) return res.status(401).json({ error: "Account no longer exists." });
-  req.isAdmin = !!requester.isAdmin;
-  const authorProfile = { name: requester.name, avatar: requester.avatar, avatarImage: requester.avatarImage };
-
-  // ---- USERS: members may only edit their OWN profile. Everyone else's
-  // profile, and every admin flag, always stays exactly as the server has it.
-  const incomingUsersByName = new Map(incoming.users.filter(u => u && u.username).map(u => [u.username, u]));
-  const mine = incomingUsersByName.get(req.username);
-  if (mine) delete mine.password;
-  const finalUsers = current.users.map(u => {
-    if (u.username !== req.username || !mine) return u;
-    return {
-      ...u,
-      username: u.username,
-      name: clampString(mine.name || u.name || u.username, 80).trim(),
-      bio: clampString(mine.bio, 1000),
-      avatar: clampString(mine.avatar || u.avatar || "U", 10),
-      avatarImage: typeof mine.avatarImage === "string" ? clampString(mine.avatarImage, 2000) : null,
-      bannerImage: typeof mine.bannerImage === "string" ? clampString(mine.bannerImage, 2000) : null,
-      isAdmin: !!u.isAdmin,
-      disabled: !!u.disabled
-    };
-  });
-
-  // ---- POSTS: authorship/content can only change at the hand of the
-  // post's own author (or an admin); deleting a post likewise requires
-  // being its author or an admin. Everyone else's save simply leaves
-  // other members' posts exactly as they were.
-  const incomingPostsById = new Map(incoming.posts.filter(p => p && typeof p.id === "number").map(p => [p.id, p]));
-  const finalPostsById = new Map();
-
-  for (const currentPost of current.posts) {
-    const incomingPost = incomingPostsById.get(currentPost.id);
-    if (!incomingPost) {
-      // Missing from what was sent = a deletion. Only the author/admin may do that.
-      if (currentPost.username === req.username || req.isAdmin) continue;
-      finalPostsById.set(currentPost.id, currentPost);
-      continue;
+    const freshState = error.status === 409 && error.payload && error.payload.state;
+    if (freshState && typeof freshState.rev === "number" && retriesLeft > 0) {
+      // Someone else saved first (even just another member logging in bumps
+      // the revision). The server only ever changes fields a member is
+      // actually allowed to touch and merges the rest (see server.js), so
+      // it's safe to simply retry with the latest revision number rather
+      // than throwing away whatever was just clicked.
+      data.rev = freshState.rev;
+      await attemptSave(retriesLeft - 1);
+      return;
     }
-    finalPostsById.set(currentPost.id, sanitizePost(incomingPost, currentPost, req, authorProfile));
-  }
-  // Any post the sender listed that the server doesn't have yet is a new
-  // post — only allowed to be authored as the sender themselves.
-  for (const [id, incomingPost] of incomingPostsById) {
-    if (finalPostsById.has(id)) continue;
-    finalPostsById.set(id, sanitizePost(incomingPost, null, req, authorProfile));
-  }
-  // Preserve the sender's ordering where possible (newest-first), then
-  // append anything they didn't include but weren't allowed to delete.
-  const orderedIds = incoming.posts.filter(p => p && typeof p.id === "number").map(p => p.id);
-  const seen = new Set();
-  let finalPosts = [];
-  for (const id of orderedIds) {
-    if (finalPostsById.has(id) && !seen.has(id)) { finalPosts.push(finalPostsById.get(id)); seen.add(id); }
-  }
-  for (const [id, post] of finalPostsById) {
-    if (!seen.has(id)) { finalPosts.push(post); seen.add(id); }
-  }
-  const validPostIds = new Set(finalPosts.map(p => p.id));
-
-  // ---- SOCIAL: a member may freely rewrite their OWN slice; every other
-  // member's slice keeps its saves/reactions/albums/reposts untouched and
-  // only accepts newly-appended notifications (see mergeOtherMemberSocial).
-  const incomingSocial = isPlainObject(incoming.social) ? incoming.social : {};
-  const finalSocial = {};
-  for (const user of finalUsers) {
-    if (user.username === req.username) {
-      finalSocial[user.username] = sanitizeOwnSocial(incomingSocial[user.username]);
+    if (freshState) {
+      // Repeated conflicts — fall back to at least showing the freshest feed.
+      data = freshState;
+      renderEverything();
+      showMessage("Couldn't save your last change. Please try again.");
     } else {
-      finalSocial[user.username] = mergeOtherMemberSocial(current.social[user.username]);
+      console.error("Could not save data to the server.", error);
+      showMessage("Couldn't save — check your connection and try again.");
     }
+  } finally {
+    savesInFlight--;
   }
+}
 
-  // Drop references to posts that no longer exist (deleted just now, or
-  // already gone) out of everyone's saves/reactions/reposts — keeps the
-  // data self-consistent no matter what any client sent.
-  for (const username of Object.keys(finalSocial)) {
-    const social = finalSocial[username];
-    social.savedPostIds = social.savedPostIds.filter(id => validPostIds.has(id));
-    social.reposts = social.reposts.filter(r => validPostIds.has(r.postId));
-    social.myReactions = Object.fromEntries(Object.entries(social.myReactions).filter(([id]) => validPostIds.has(Number(id))));
-  }
+/* =========================================================
+   LIVE SYNC
+   Polls the server every few seconds so members see each
+   other's new posts, comments, and reactions without having
+   to refresh. Skipped while a modal (like the composer) is
+   open so it never overwrites something being typed.
+========================================================= */
 
-  // Reaction counts and share counts are never trusted from the client —
-  // they're tallied fresh from every member's own per-member state, so a
-  // single member can never inflate/forge the totals everyone else sees.
-  const reactionTotals = new Map(); // postId -> { emoji: count }
-  const shareTotals = new Map();    // postId -> count
-  for (const social of Object.values(finalSocial)) {
-    for (const [postIdStr, emoji] of Object.entries(social.myReactions)) {
-      const postId = Number(postIdStr);
-      if (!reactionTotals.has(postId)) reactionTotals.set(postId, {});
-      const bucket = reactionTotals.get(postId);
-      bucket[emoji] = (bucket[emoji] || 0) + 1;
-    }
-    for (const repost of social.reposts) {
-      shareTotals.set(repost.postId, (shareTotals.get(repost.postId) || 0) + 1);
-    }
+let pollTimer = null;
+
+function anyModalOpen() {
+  return !!document.querySelector(".modal:not(.hidden)");
+}
+
+async function pollState() {
+  if (!session || anyModalOpen() || savesInFlight > 0) return;
+  try {
+    const fresh = await api("/api/state");
+    if (savesInFlight > 0) return; // a save started while we were fetching; don't overwrite it
+    if (JSON.stringify(fresh) === JSON.stringify(data)) return;
+    data = fresh;
+    renderEverything();
+  } catch (error) {
+    // Session probably expired — quietly stop polling; the next
+    // user action will surface a proper "please log in again".
+    console.error("Live sync paused.", error);
   }
-  finalPosts.forEach(post => {
-    post.reactions = reactionTotals.get(post.id) || {};
-    post.shares = shareTotals.get(post.id) || 0;
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(pollState, 7000);
+}
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function currentUser() {
+  if (!session) return null;
+  return data.users.find(user => user.username === session.username);
+}
+
+function showMessage(message) {
+  const toast = document.getElementById("toast");
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(showMessage._timer);
+  showMessage._timer = setTimeout(() => toast.classList.remove("show"), 2200);
+}
+
+function avatarLetter(name) {
+  return name ? name.charAt(0).toUpperCase() : "N";
+}
+
+function escapeHTML(value) {
+  const div = document.createElement("div");
+  div.textContent = value == null ? "" : String(value);
+  return div.innerHTML;
+}
+
+function usernamesMatch(username1, username2) {
+  if (!username1 || !username2) return false;
+  return String(username1).trim().toLowerCase() === String(username2).trim().toLowerCase();
+}
+
+function findUser(username) {
+  if (!username) return null;
+  return data.users.find(user => usernamesMatch(user.username, username)) || null;
+}
+
+/* =========================================================
+   COMMUNITY MEMBERS
+   Every account is automatically connected to every other
+   account — there is no friend request system anymore.
+========================================================= */
+
+function otherMembers(excludeUsername) {
+  return data.users.filter(user => !usernamesMatch(user.username, excludeUsername));
+}
+
+function ensureSocial() {
+  const user = currentUser();
+  return ensureSocialFor(user ? user.username : null);
+}
+
+/* =========================================================
+   NORMALIZE SERVER DATA
+   Fills in any missing fields on data just fetched from the
+   server, same idea as the old "upgrade saved data" step —
+   just no longer needs to seed default users, since the
+   server already owns that.
+========================================================= */
+
+function upgradeData() {
+  if (!Array.isArray(data.users)) data.users = [];
+  if (!Array.isArray(data.posts)) data.posts = [];
+  if (!data.social || typeof data.social !== "object") data.social = {};
+
+  data.users.forEach(user => ensureSocialFor(user.username));
+
+  data.posts.forEach(post => {
+    if (!post.reactions) post.reactions = {};
+    if (!Array.isArray(post.commentsList)) post.commentsList = [];
+    if (typeof post.comments !== "number") post.comments = post.commentsList.length;
+    if (typeof post.shares !== "number") post.shares = 0;
+    // `userReaction` / `saved` used to live directly on the (shared) post
+    // object, which meant one member's reaction or save leaked into every
+    // other member's view. They're per-member now (see ensureSocialFor),
+    // so any leftover legacy fields on the post itself are just noise —
+    // drop them rather than let old data confuse anything.
+    delete post.userReaction;
+    delete post.saved;
   });
+}
 
-  // Notifications are generated from verified state changes on the server.
-  // Client-supplied notification text is ignored, preventing members from
-  // forging notifications for other accounts.
-  const oldOwnSocial = current.social?.[req.username] || defaultSocialFor();
-  const newOwnSocial = finalSocial[req.username] || defaultSocialFor();
-  const notify = (username, notification) => {
-    if (!username || username.toLowerCase() === req.username.toLowerCase()) return;
-    if (!finalSocial[username]) finalSocial[username] = defaultSocialFor();
-    finalSocial[username].notifications = [notification, ...(finalSocial[username].notifications || [])].slice(0, 300);
-  };
-  for (const [postIdStr, emoji] of Object.entries(newOwnSocial.myReactions || {})) {
-    const oldEmoji = oldOwnSocial.myReactions?.[postIdStr];
-    if (emoji !== oldEmoji) {
-      const post = finalPosts.find(p => String(p.id) === String(postIdStr));
-      if (post && post.username !== req.username) notify(post.username, {
-        name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-        text: `reacted ${emoji} to your post`, time: "Just now", unread: true, postId: post.id
-      });
-    }
-  }
-  for (const oldId of Object.keys(oldOwnSocial.myReactions || {})) {
-    if (!(oldId in (newOwnSocial.myReactions || {}))) {
-      // Reaction removal creates no notification.
-    }
-  }
-  const oldRepostIds = new Set((oldOwnSocial.reposts || []).map(r => r.postId));
-  for (const repost of newOwnSocial.reposts || []) {
-    if (!oldRepostIds.has(repost.postId)) {
-      const post = finalPosts.find(p => p.id === repost.postId);
-      if (post && post.username !== req.username) notify(post.username, {
-        name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-        text: "reposted your post", time: "Just now", unread: true, postId: post.id
-      });
-    }
-  }
-  const oldPostIds = new Set(current.posts.map(p => p.id));
-  for (const post of finalPosts) {
-    if (!oldPostIds.has(post.id) && post.username === req.username) {
-      const kind = post.video ? "shared a new video" : (post.image || post.images?.length) ? "shared a new photo" : "shared a new update";
-      for (const user of finalUsers) {
-        if (user.username !== req.username) notify(user.username, {
-          name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-          text: kind, time: "Just now", unread: true, type: "new_post", postId: post.id
-        });
-      }
-    }
-  }
+/* =========================================================
+   FILE HELPERS
+========================================================= */
 
-  // Detect newly appended comments by comparing the server's old post with the
-  // sanitized final post. Only the current member's newly added comments can trigger this.
-  for (const oldPost of current.posts) {
-    const newPost = finalPosts.find(p => p.id === oldPost.id);
-    if (!newPost || newPost.username === req.username) continue;
-    const oldLen = Array.isArray(oldPost.commentsList) ? oldPost.commentsList.length : 0;
-    const newLen = Array.isArray(newPost.commentsList) ? newPost.commentsList.length : 0;
-    if (newLen > oldLen) notify(newPost.username, {
-      name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-      text: "commented on your post", time: "Just now", unread: true, postId: newPost.id
-    });
-  }
-
-  const finalState = {
-    users: finalUsers,
-    posts: finalPosts,
-    social: finalSocial,
-    rev: currentRev
-  };
-
-  const saved = await store.writeStateIfRevision(finalState, currentRev);
-  if (!saved) {
-    const fresh = await readState();
-    return res.status(409).json({
-      error: "Someone else just updated the feed. It has been refreshed, so please try again.",
-      state: { users: fresh.users, posts: fresh.posts, social: { [req.username]: fresh.social?.[req.username] || defaultSocialFor() }, rev: Number(fresh.rev) || 0 }
-    });
-  }
-  finalState.rev = currentRev + 1;
-  res.json({ ok: true, rev: finalState.rev });
-}));
-
-// ---------------------------------------------------------
-// ADMIN ROUTES
-// ---------------------------------------------------------
-// Every admin operation is checked on the server. The frontend
-// never gets to decide whether a user is an administrator.
-app.get("/api/admin/overview", requireAdmin, ah(async (req, res) => {
-  const state = await readState();
-  const credentials = await readCredentials();
-  const users = state.users.map(u => ({
-    username: u.username,
-    name: u.name,
-    bio: u.bio || "",
-    avatar: u.avatar || (u.name || u.username || "U").charAt(0).toUpperCase(),
-    avatarImage: u.avatarImage || null,
-    bannerImage: u.bannerImage || null,
-    isAdmin: !!u.isAdmin,
-    postCount: state.posts.filter(p => p.username && p.username.toLowerCase() === u.username.toLowerCase()).length,
-    hasPassword: !!findCredentialKey(credentials, u.username),
-    disabled: !!u.disabled
-  }));
-  res.json({
-    admin: req.username,
-    users,
-    posts: state.posts,
-    updatedAt: new Date().toISOString()
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+    reader.readAsDataURL(file);
   });
-}));
+}
 
-app.post("/api/admin/users", requireAdmin, ah(async (req, res) => {
-  const username = String(req.body?.username || "").trim();
-  const password = String(req.body?.password || "");
-  const name = String(req.body?.name || username).trim().slice(0, 80);
-  if (username.length < 3) return res.status(400).json({ error: "Username must be at least 3 characters." });
-  if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
-  if (/\s/.test(username)) return res.status(400).json({ error: "Username cannot contain spaces." });
-
-  const state = await readState();
-  const credentials = await readCredentials();
-  if (findCredentialKey(credentials, username) || state.users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
-    return res.status(409).json({ error: "That username already exists." });
-  }
-
-  credentials[username] = bcrypt.hashSync(password, 10);
-  state.users.push({
-    username,
-    name: name || username,
-    bio: "Member of Nea's Boarding Horse.",
-    avatar: (name || username).charAt(0).toUpperCase(),
-    avatarImage: null,
-    bannerImage: null,
-    isAdmin: false
+function compressImageFile(file, maxDimension = 1280, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    readFileAsDataURL(file).then(rawDataUrl => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round(height * (maxDimension / width));
+            width = maxDimension;
+          } else {
+            width = Math.round(width * (maxDimension / height));
+            height = maxDimension;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Could not read that image."));
+      img.src = rawDataUrl;
+    }).catch(reject);
   });
-  state.social[username] = defaultSocialFor();
-  await writeCredentials(credentials);
-  await writeState(state);
-  res.status(201).json({ ok: true, username });
-}));
+}
 
-app.delete("/api/admin/users/:username", requireAdmin, ah(async (req, res) => {
-  const username = decodeURIComponent(req.params.username || "").trim();
-  const state = await readState();
-  const credentials = await readCredentials();
-  const key = findCredentialKey(credentials, username);
-  const user = state.users.find(u => u.username.toLowerCase() === username.toLowerCase());
-  if (!key || !user) return res.status(404).json({ error: "Account not found." });
-  if (user.username.toLowerCase() === req.username.toLowerCase()) return res.status(400).json({ error: "You cannot delete your own admin account." });
-  if (user.isAdmin && state.users.filter(u => u.isAdmin).length <= 1) return res.status(400).json({ error: "You cannot delete the last admin account." });
+/* =========================================================
+   AUTH
+========================================================= */
 
-  delete credentials[key];
-  state.users = state.users.filter(u => u.username.toLowerCase() !== user.username.toLowerCase());
-  delete state.social[user.username];
-  state.posts = state.posts.filter(p => !p.username || p.username.toLowerCase() !== user.username.toLowerCase());
-  await writeCredentials(credentials);
-  await writeState(state);
-  res.json({ ok: true });
-}));
+function showWelcome() {
+  document.getElementById("welcomePage")?.classList.remove("hidden");
+  document.getElementById("loginPage")?.classList.add("hidden");
+}
 
+function showLogin() {
+  document.getElementById("welcomePage")?.classList.add("hidden");
+  document.getElementById("loginPage")?.classList.remove("hidden");
+  setLoginError("");
+}
 
-
-app.patch("/api/admin/users/:username", requireAdmin, ah(async (req, res) => {
-  const username = decodeURIComponent(req.params.username || "").trim();
-  const state = await readState();
-  const credentials = await readCredentials();
-  const user = state.users.find(u => u.username.toLowerCase() === username.toLowerCase());
-  if (!user || !findCredentialKey(credentials, user.username)) return res.status(404).json({ error: "Account not found." });
-
-  const action = String(req.body?.action || "").toLowerCase();
-  if (action === "disable" || action === "enable") {
-    if (user.username.toLowerCase() === req.username.toLowerCase()) return res.status(400).json({ error: "You cannot disable your own admin account." });
-    user.disabled = action === "disable";
-  } else if (action === "promote" || action === "demote") {
-    if (user.username.toLowerCase() === req.username.toLowerCase() && action === "demote") return res.status(400).json({ error: "You cannot remove your own admin access." });
-    if (action === "demote" && user.isAdmin && state.users.filter(u => u.isAdmin).length <= 1) return res.status(400).json({ error: "You cannot demote the last admin account." });
-    user.isAdmin = action === "promote";
-  } else if (action === "rename") {
-    const name = String(req.body?.name || "").trim();
-    if (!name) return res.status(400).json({ error: "Name is required." });
-    user.name = name.slice(0, 80);
+function setLoginError(message) {
+  const el = document.getElementById("loginError");
+  if (!el) return;
+  if (!message) {
+    el.classList.add("hidden");
+    el.textContent = "";
   } else {
-    return res.status(400).json({ error: "Unknown admin action." });
+    el.classList.remove("hidden");
+    el.textContent = message;
+  }
+}
+
+/* =========================================================
+   LOGIN FORM
+   Real authentication now happens on the server: the browser
+   never sees anyone's password hash, and the server sets an
+   httpOnly session cookie once the username/password check
+   out. (The old version let anyone in by typing "admin" with
+   no password at all — that's fixed; admin now logs in the
+   same way as everyone else.)
+========================================================= */
+
+const loginForm = document.getElementById("loginForm");
+if (loginForm) {
+  loginForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    setLoginError("");
+    const username = document.getElementById("loginUsername").value.trim();
+    const password = document.getElementById("loginPassword").value;
+    const submitButton = loginForm.querySelector("button[type='submit']");
+
+    if (submitButton) submitButton.disabled = true;
+    try {
+      const result = await api("/api/auth/login", { method: "POST", body: { username, password } });
+      session = result;
+      await loadStateAndEnter();
+    } catch (error) {
+      setLoginError(error.message || "Incorrect username or password.");
+      showMessage(error.message || "Incorrect username or password.");
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
+  });
+}
+
+/* =========================================================
+   ENTER APP
+========================================================= */
+
+async function loadStateAndEnter() {
+  data = await api("/api/state");
+  upgradeData();
+  enterApplication();
+}
+
+function enterApplication() {
+  document.getElementById("authScreen")?.classList.add("hidden");
+  document.getElementById("app")?.classList.remove("hidden");
+  renderEverything();
+  updateAdminNavigation();
+  openPage("home");
+  startPolling();
+}
+
+function updateAdminNavigation() {
+  const show = !!session?.isAdmin;
+  document.getElementById("adminNavButton")?.classList.toggle("hidden", !show);
+  document.getElementById("adminMobileNav")?.classList.toggle("hidden", !show);
+  document.getElementById("adminPage")?.classList.toggle("hidden", !show && document.getElementById("adminPage")?.classList.contains("active"));
+}
+
+async function loadAdminPanel() {
+  if (!session?.isAdmin) return;
+  try {
+    const result = await api("/api/admin/overview");
+    adminOverview = result;
+    document.getElementById("adminUserCount").textContent = result.users.length;
+    document.getElementById("adminPostCount").textContent = result.posts.length;
+    renderAdminUsers();
+    renderAdminPosts();
+  } catch (error) {
+    if (error.status === 401 || error.status === 403) {
+      showMessage("Admin session is no longer active.");
+      openPage("home");
+      return;
+    }
+    showMessage(error.message || "Could not load the admin panel.");
+  }
+}
+
+function renderAdminUsers() {
+  const container = document.getElementById("adminUsersList");
+  if (!container) return;
+  const search = String(document.getElementById("adminUserSearch")?.value || "").toLowerCase().trim();
+  const users = (adminOverview.users || []).filter(u =>
+    !search || `${u.name} ${u.username}`.toLowerCase().includes(search)
+  );
+  if (!users.length) {
+    container.innerHTML = `<p class="no-results">No accounts found.</p>`;
+    return;
+  }
+  container.innerHTML = users.map(u => `
+    <div class="admin-user-row">
+      <div class="avatar">${u.avatarImage ? `<img src="${escapeHTML(u.avatarImage)}" alt="${escapeHTML(u.name || u.username)}">` : escapeHTML(u.avatar || "U")}</div>
+      <div class="admin-user-info">
+        <strong>${escapeHTML(u.name || u.username)}</strong>
+        <span>@${escapeHTML(u.username)} · ${u.postCount} post${u.postCount === 1 ? "" : "s"}</span>
+      </div>
+      <div class="admin-user-actions">
+        ${u.isAdmin ? `<span class="admin-badge">Admin</span>` : `<span class="admin-badge member">Member</span>`}
+        ${u.disabled ? `<span class="admin-badge disabled">Disabled</span>` : ""}
+        ${u.username.toLowerCase() === String(session.username).toLowerCase() ? `<span class="admin-current">You</span>` : `
+          <button class="soft-button small-admin-btn" onclick="adminRenameUser('${encodeURIComponent(u.username)}', '${escapeHTML((u.name || '').replace(/'/g, "&#39;"))}')">Rename</button>
+          <button class="soft-button small-admin-btn" onclick="adminResetPassword('${encodeURIComponent(u.username)}')">Reset Password</button>
+          <button class="soft-button small-admin-btn" onclick="adminToggleDisabled('${encodeURIComponent(u.username)}', ${u.disabled ? 'true' : 'false'})">${u.disabled ? 'Enable' : 'Disable'}</button>
+          <button class="soft-button small-admin-btn" onclick="adminToggleRole('${encodeURIComponent(u.username)}', ${u.isAdmin ? 'true' : 'false'})">${u.isAdmin ? 'Remove Admin' : 'Make Admin'}</button>
+          <button class="danger-button" onclick="deleteAdminUser('${encodeURIComponent(u.username)}')">Delete</button>`}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderAdminPosts() {
+  const grid = document.getElementById("adminPostsGrid");
+  if (!grid) return;
+  const posts = adminOverview.posts || [];
+  if (!posts.length) {
+    grid.innerHTML = `<p class="no-results">No posts yet.</p>`;
+    return;
+  }
+  grid.innerHTML = posts.map(post => {
+    const user = (adminOverview.users || []).find(u => u.username.toLowerCase() === String(post.username || "").toLowerCase());
+    const author = user?.name || post.name || post.username || "Unknown member";
+    const media = post.video
+      ? `<video class="admin-post-media" src="${escapeHTML(post.video)}" controls preload="metadata"></video>`
+      : post.image
+        ? `<img class="admin-post-media" src="${escapeHTML(post.image)}" alt="Posted by ${escapeHTML(author)}" loading="lazy">`
+        : Array.isArray(post.images) && post.images.length
+          ? `<div class="admin-post-gallery">${post.images.slice(0, 10).map(src => `<img class="admin-post-media" src="${escapeHTML(src)}" alt="Posted by ${escapeHTML(author)}" loading="lazy">`).join("")}</div>`
+          : `<div class="admin-no-media">Text post</div>`;
+    return `<article class="admin-post-card">
+      ${media}
+      <div class="admin-post-body">
+        <strong>${escapeHTML(author)}</strong>
+        <span>@${escapeHTML(post.username || "unknown")}</span>
+        ${post.text ? `<p>${escapeHTML(post.text).replace(/\n/g, "<br>")}</p>` : ""}
+        <button class="danger-button admin-delete-post" onclick="deleteAdminPost('${encodeURIComponent(String(post.id))}')">Delete Post</button>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+async function createAdminUser(event) {
+  event.preventDefault();
+  const button = event.target.querySelector("button[type='submit']");
+  const body = {
+    name: document.getElementById("adminNewName").value.trim(),
+    username: document.getElementById("adminNewUsername").value.trim(),
+    password: document.getElementById("adminNewPassword").value
+  };
+  button.disabled = true;
+  try {
+    await api("/api/admin/users", { method: "POST", body });
+    event.target.reset();
+    showMessage("Account created.");
+    await loadAdminPanel();
+  } catch (error) {
+    showMessage(error.message || "Could not create account.");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function adminRenameUser(encodedUsername, currentName) {
+  const username = decodeURIComponent(encodedUsername);
+  const name = await appPrompt(`New name for ${username}:`, { title: "Rename Account", defaultValue: currentName || "", okLabel: "Save" });
+  if (name === null) return;
+  if (!name.trim()) return showMessage("Name cannot be empty.");
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(username)}`, { method: "PATCH", body: { action: "rename", name: name.trim() } });
+    showMessage("Account name updated.");
+    await loadAdminPanel();
+  } catch (error) { showMessage(error.message || "Could not rename account."); }
+}
+
+async function adminResetPassword(encodedUsername) {
+  const username = decodeURIComponent(encodedUsername);
+  const password = await appPrompt(`Enter a new password for ${username}:`, { title: "Reset Password", inputType: "password", okLabel: "Reset Password" });
+  if (password === null) return;
+  if (password.length < 6) return showMessage("Password must be at least 8 characters.");
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(username)}/reset-password`, { method: "POST", body: { password } });
+    showMessage("Password reset successfully.");
+  } catch (error) { showMessage(error.message || "Could not reset password."); }
+}
+
+async function adminToggleDisabled(encodedUsername, disabled) {
+  const username = decodeURIComponent(encodedUsername);
+  const action = disabled ? "enable" : "disable";
+  const confirmed = await appConfirm(`${disabled ? "Enable" : "Disable"} ${username}'s account?`, {
+    title: disabled ? "Enable Account" : "Disable Account",
+    okLabel: disabled ? "Enable" : "Disable",
+    danger: !disabled
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(username)}`, { method: "PATCH", body: { action } });
+    showMessage(`Account ${disabled ? "enabled" : "disabled"}.`);
+    await loadAdminPanel();
+  } catch (error) { showMessage(error.message || "Could not update account."); }
+}
+
+async function adminToggleRole(encodedUsername, isAdmin) {
+  const username = decodeURIComponent(encodedUsername);
+  const action = isAdmin ? "demote" : "promote";
+  const confirmed = await appConfirm(`${isAdmin ? "Remove admin access from" : "Make"} ${username} ${isAdmin ? "?" : "an admin?"}`, {
+    title: "Admin Access",
+    okLabel: isAdmin ? "Remove Admin" : "Make Admin",
+    danger: isAdmin
+  });
+  if (!confirmed) return;
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(username)}`, { method: "PATCH", body: { action } });
+    showMessage(isAdmin ? "Admin access removed." : "Admin access granted.");
+    await loadAdminPanel();
+  } catch (error) { showMessage(error.message || "Could not change admin access."); }
+}
+
+async function deleteAdminPost(encodedPostId) {
+  const postId = decodeURIComponent(encodedPostId);
+  const confirmed = await appConfirm("Delete this post for everyone? This cannot be undone.", { title: "Delete Post", okLabel: "Delete", danger: true });
+  if (!confirmed) return;
+  try {
+    await api(`/api/admin/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
+    showMessage("Post deleted.");
+    await loadAdminPanel();
+    await loadStateAndEnter();
+    openPage("admin");
+  } catch (error) { showMessage(error.message || "Could not delete post."); }
+}
+
+async function deleteAdminUser(encodedUsername) {
+  const username = decodeURIComponent(encodedUsername);
+  const confirmed = await appConfirm(`Delete the account ${username}? Their posts will also be removed.`, { title: "Delete Account", okLabel: "Delete", danger: true });
+  if (!confirmed) return;
+  try {
+    await api(`/api/admin/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+    showMessage("Account deleted.");
+    await loadAdminPanel();
+    await loadStateAndEnter();
+    openPage("admin");
+  } catch (error) {
+    showMessage(error.message || "Could not delete account.");
+  }
+}
+
+const adminCreateForm = document.getElementById("adminCreateForm");
+if (adminCreateForm) adminCreateForm.addEventListener("submit", createAdminUser);
+
+async function logout() {
+  stopPolling();
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } catch (error) {
+    console.error("Logout request failed.", error);
   }
 
-  await writeState(state);
-  res.json({ ok: true, user: { username: user.username, name: user.name, isAdmin: !!user.isAdmin, disabled: !!user.disabled } });
-}));
+  session = null;
+  data = { users: [], posts: [], social: {} };
 
-app.post("/api/admin/users/:username/reset-password", requireAdmin, ah(async (req, res) => {
-  const username = decodeURIComponent(req.params.username || "").trim();
-  const newPassword = String(req.body?.password || "");
-  if (newPassword.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
-  const credentials = await readCredentials();
-  const key = findCredentialKey(credentials, username);
-  if (!key) return res.status(404).json({ error: "Account not found." });
-  credentials[key] = bcrypt.hashSync(newPassword, 10);
-  await writeCredentials(credentials);
-  res.json({ ok: true });
-}));
+  activePostId = null;
+  activeAlbumId = null;
+  composerImages = [];
+  composerVideo = null;
+  viewingUsername = null;
 
-app.delete("/api/admin/posts/:postId", requireAdmin, ah(async (req, res) => {
-  const postId = String(req.params.postId);
-  const state = await readState();
-  const before = state.posts.length;
-  state.posts = state.posts.filter(p => String(p.id) !== postId);
-  if (state.posts.length === before) return res.status(404).json({ error: "Post not found." });
-  await writeState(state);
-  res.json({ ok: true });
-}));
+  document.getElementById("app")?.classList.add("hidden");
+  document.getElementById("authScreen")?.classList.remove("hidden");
+  document.getElementById("loginForm")?.reset();
 
-// ---------------------------------------------------------
-// STATIC FRONTEND
-// ---------------------------------------------------------
-app.use("/uploads", express.static(UPLOAD_DIR, { maxAge: "7d", setHeaders: res => res.setHeader("X-Content-Type-Options", "nosniff") }));
-app.use(express.static(PUBLIC_DIR));
-app.get("*", (req, res) => {
-  if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found." });
-  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
-});
+  showWelcome();
+  showMessage("You've been logged out.");
+}
 
-// Seed Firestore (first run only — a no-op every run after that), THEN
-// start listening. Firestore access is async, unlike the old fs.existsSync
-// seeding, so this can't happen at plain top-level code anymore.
-store.ensureSeeded(defaultState(), (() => {
-  const credentials = {};
-  SEED_MEMBERS.forEach(m => { credentials[m.username.toLowerCase()] = bcrypt.hashSync(m.password, 10); });
-  return credentials;
-})()).then(() => {
-  app.listen(PORT, () => {
-    console.log(`Nea's Boarding Horse server running on http://localhost:${PORT}`);
+/* =========================================================
+   NAVIGATION
+   Keeps the mobile bottom nav and the desktop sidebar rail
+   in sync — both call the same openPage(), just styled
+   differently by screen size.
+========================================================= */
+
+function openPage(page) {
+  document.querySelectorAll(".page").forEach(section => section.classList.remove("active"));
+  const target = document.getElementById(page + "Page");
+  if (target) target.classList.add("active");
+
+  document.querySelectorAll(".nav-item").forEach(btn => btn.classList.remove("active"));
+  const nav = document.querySelector(`.nav-item[onclick="openPage('${page}')"]`);
+  if (nav) nav.classList.add("active");
+
+  document.querySelectorAll(".rail-item").forEach(btn => btn.classList.remove("active"));
+  const rail = document.querySelector(`.rail-item[data-rail="${page}"]`);
+  if (rail) rail.classList.add("active");
+
+  if (page === "friends") {
+    renderFriends();
+  }
+  if (page === "admin") {
+    if (!session?.isAdmin) {
+      openPage("home");
+      return;
+    }
+    loadAdminPanel();
+  }
+  if (page === "notifications") {
+    const social = ensureSocial();
+    social.notifications.forEach(n => { n.unread = false; });
+    saveData();
+    renderNotifications();
+    updateNotificationDot();
+  }
+}
+
+/* =========================================================
+   PROFILE HEADER
+========================================================= */
+
+function applyProfileCover(user) {
+  const cover = document.getElementById("profileCover");
+  if (!cover) return;
+  cover.style.backgroundImage = user.bannerImage ? `url("${user.bannerImage}")` : "";
+}
+
+function renderUser() {
+  const user = currentUser();
+  if (!user) return;
+  ["headerAvatar", "homeAvatar", "modalAvatar", "profileAvatar", "sidebarAvatar"].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (user.avatarImage) {
+      el.innerHTML = `<img src="${escapeHTML(user.avatarImage)}" alt="${escapeHTML(user.name)}">`;
+    } else {
+      el.textContent = user.avatar || avatarLetter(user.name);
+    }
   });
-}).catch(err => {
-  console.error("\n[FATAL] Could not connect to Firebase:", err.message);
-  process.exit(1);
+  document.getElementById("modalName")?.replaceChildren(document.createTextNode(user.name));
+  const profileName = document.getElementById("profileName");
+  if (profileName) profileName.textContent = user.name;
+  const profileUsername = document.getElementById("profileUsername");
+  if (profileUsername) profileUsername.textContent = user.username;
+  const profileBio = document.getElementById("profileBio");
+  if (profileBio) profileBio.textContent = user.bio;
+  const sidebarName = document.getElementById("sidebarName");
+  if (sidebarName) sidebarName.textContent = user.name;
+  const sidebarUsername = document.getElementById("sidebarUsername");
+  if (sidebarUsername) sidebarUsername.textContent = user.username;
+  applyProfileCover(user);
+}
+
+/* =========================================================
+   AVATAR UPLOAD
+========================================================= */
+
+function triggerAvatarUpload() {
+  document.getElementById("avatarInput")?.click();
+}
+
+const avatarInput = document.getElementById("avatarInput");
+if (avatarInput) {
+  avatarInput.addEventListener("change", async function () {
+    const file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      showMessage("Please choose an image file.");
+      return;
+    }
+    showMessage("Updating profile picture…");
+    try {
+      const dataUrl = await compressImageFile(file, 500, 0.86);
+      const url = await uploadMedia(dataUrl, "image");
+      const user = currentUser();
+      if (!user) return;
+      user.avatarImage = url;
+      if (saveData()) {
+        renderEverything();
+        showMessage("Profile picture updated!");
+      }
+    } catch (error) {
+      console.error(error);
+      showMessage("Couldn't update your profile picture.");
+    }
+  });
+}
+
+/* =========================================================
+   COVER UPLOAD
+========================================================= */
+
+function triggerBannerUpload() {
+  document.getElementById("bannerInput")?.click();
+}
+
+const bannerInput = document.getElementById("bannerInput");
+if (bannerInput) {
+  bannerInput.addEventListener("change", async function () {
+    const file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      showMessage("Please choose an image file.");
+      return;
+    }
+    showMessage("Updating cover photo…");
+    try {
+      const dataUrl = await compressImageFile(file, 1600, 0.85);
+      const url = await uploadMedia(dataUrl, "image");
+      const user = currentUser();
+      if (!user) return;
+      user.bannerImage = url;
+      if (saveData()) {
+        applyProfileCover(user);
+        showMessage("Cover photo updated!");
+      }
+    } catch (error) {
+      console.error(error);
+      showMessage("Couldn't update your cover photo.");
+    }
+  });
+}
+
+/* =========================================================
+   POST CARD HTML
+========================================================= */
+
+function postCardHTML(post, options = {}) {
+  // Which emoji (if any) the CURRENTLY LOGGED-IN member picked for this
+  // post — per-member state, so it never shows another member's reaction
+  // as if it were yours (see ensureSocialFor).
+  const myReaction = (ensureSocial().myReactions || {})[post.id];
+  const reactionButtons = REACTIONS.map(emoji => `    <button class="reaction-btn ${myReaction === emoji ? "active" : ""}" onclick="toggleReaction(${post.id}, '${emoji}')">
+      ${emoji}
+      ${post.reactions && post.reactions[emoji] ? ` ${post.reactions[emoji]}` : ""}
+    </button>
+  `).join("");
+
+  let mediaHTML = "";
+
+  if (post.video) {
+    mediaHTML = `
+      <video class="post-video" src="${escapeHTML(post.video)}" controls playsinline></video>
+    `;
+  } else if (post.images && post.images.length) {
+    mediaHTML = `
+      <div class="post-album">
+        ${post.images.map(src => `<img src="${escapeHTML(src)}" alt="Album image">`).join("")}
+      </div>
+    `;
+  } else if (post.image) {
+    mediaHTML = `
+      <img class="post-image" src="${escapeHTML(post.image)}" alt="Post image">
+    `;
+  }
+
+  const author = findUser(post.username) || {
+    name: post.name,
+    avatar: post.avatar,
+    avatarImage: post.avatarImage
+  };
+  const authorAvatarHTML = author.avatarImage
+    ? `<img src="${escapeHTML(author.avatarImage)}" alt="${escapeHTML(author.name)}">`
+    : escapeHTML(author.avatar || avatarLetter(author.name));
+
+  const repostTag = options.repostedBy
+    ? `<div class="repost-tag">${iconSVG("repeat")} ${escapeHTML(options.repostedBy)} reposted</div>`
+    : "";
+
+  // Whether the CURRENTLY LOGGED-IN member has saved this post — also
+  // per-member state, not a field on the shared post (see ensureSocialFor).
+  const saved = ensureSocial().savedPostIds.includes(post.id);
+
+  return `
+    <article class="post-card" data-post-id="${post.id}">
+      ${repostTag}
+      <div class="post-header">
+        <div class="avatar ${post.username ? "clickable" : ""}" ${post.username ? `onclick="openUserProfile('${escapeHTML(post.username)}')"` : ""}>
+          ${authorAvatarHTML}
+        </div>
+        <div class="post-user" ${post.username ? `onclick="openUserProfile('${escapeHTML(post.username)}')"` : ""}>
+          <strong>${escapeHTML(author.name)}</strong>
+          <small>${escapeHTML(post.time)} · Community</small>
+        </div>
+        <button onclick="openPostMenu(${post.id})" aria-label="Post options"><span class="icon">${iconSVG("moreHorizontal")}</span></button>
+      </div>
+      <div class="post-text">${escapeHTML(post.text)}</div>
+      ${mediaHTML}
+      <div class="reaction-bar">${reactionButtons}</div>
+      <div class="post-actions">
+        <button onclick="openComments(${post.id})"><span class="icon">${iconSVG("messageCircle")}</span> ${post.comments || 0}</button>
+        <button class="${isRepostedByCurrentUser(post.id) ? "shared" : ""}" onclick="sharePost(${post.id})"><span class="icon">${iconSVG("repeat")}</span> ${post.shares || 0}</button>
+        <button class="save-button" onclick="savePost(${post.id})" aria-label="${saved ? "Remove from saved" : "Save post"}"><span class="icon">${iconSVG("bookmark", { filled: saved })}</span></button>
+      </div>
+      <div class="post-reactions">
+        ${totalReactions(post) > 0 ? `${totalReactions(post)} people reacted to this post` : "Be the first to react"}
+      </div>
+    </article>
+  `;
+}
+
+/* =========================================================
+   FEED
+   One shared community feed — every member's posts show up
+   here for everyone, newest first.
+========================================================= */
+
+function renderFeed() {
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  if (!data.posts.length) {
+    feed.innerHTML = `<p class="no-results">No posts yet. Be the first to share something!</p>`;
+    return;
+  }
+  feed.innerHTML = data.posts.map(post => postCardHTML(post)).join("");
+}
+
+function totalReactions(post) {
+  if (!post.reactions) return 0;
+  return Object.values(post.reactions).reduce((total, count) => total + count, 0);
+}
+
+/* =========================================================
+   REACTIONS
+========================================================= */
+
+function toggleReaction(id, emoji) {
+  const post = data.posts.find(p => p.id === id);
+  if (!post) return;
+  if (!post.reactions) post.reactions = {};
+
+  const user = currentUser();
+  const social = ensureSocial();
+  const previousReaction = social.myReactions[id] || null;
+  const wasReacting = previousReaction === emoji;
+
+  if (wasReacting) {
+    post.reactions[emoji] = Math.max(0, (post.reactions[emoji] || 0) - 1);
+    delete social.myReactions[id];
+  } else {
+    if (previousReaction) {
+      post.reactions[previousReaction] = Math.max(0, (post.reactions[previousReaction] || 0) - 1);
+    }
+    post.reactions[emoji] = (post.reactions[emoji] || 0) + 1;
+    social.myReactions[id] = emoji;
+  }
+
+
+
+  saveData();
+  renderFeed();
+  renderProfile();
+  if (activePostId === id) refreshPostView();
+}
+
+/* =========================================================
+   SHARE / REPOST
+========================================================= */
+
+function isRepostedByCurrentUser(postId) {
+  const social = ensureSocial();
+  return social.reposts.some(r => r.postId === postId);
+}
+
+function sharePost(id) {
+  const post = data.posts.find(p => p.id === id);
+  if (!post) return;
+  const user = currentUser();
+  if (!user) return;
+
+  const social = ensureSocial();
+  const alreadyReposted = social.reposts.some(r => r.postId === id);
+
+  if (alreadyReposted) {
+    social.reposts = social.reposts.filter(r => r.postId !== id);
+    post.shares = Math.max(0, (post.shares || 0) - 1);
+    saveData();
+    renderFeed();
+    renderProfile();
+    if (activePostId === id) refreshPostView();
+    showMessage("Repost removed.");
+    return;
+  }
+
+  social.reposts.unshift({
+    postId: id,
+    time: "Just now"
+  });
+  post.shares = (post.shares || 0) + 1;
+
+
+
+  saveData();
+  renderFeed();
+  renderProfile();
+  if (activePostId === id) refreshPostView();
+  showMessage("Reposted to your profile!");
+}
+
+/* =========================================================
+   SAVE
+========================================================= */
+
+function savePost(id) {
+  const post = data.posts.find(p => p.id === id);
+  if (!post) return;
+  const social = ensureSocial();
+  const index = social.savedPostIds.indexOf(id);
+  const nowSaved = index === -1;
+  if (nowSaved) social.savedPostIds.push(id);
+  else social.savedPostIds.splice(index, 1);
+  saveData();
+  renderFeed();
+  renderProfile();
+  if (activePostId === id) refreshPostView();
+  showMessage(nowSaved ? "Post saved." : "Post removed from saved.");
+}
+
+/* =========================================================
+   POST MENU
+========================================================= */
+
+function openPostMenu(id) {
+  const post = data.posts.find(p => p.id === id);
+  if (!post) return;
+  activePostId = id;
+  const user = currentUser();
+  const isOwner = user && post.username && usernamesMatch(post.username, user.username);
+  const isAdmin = user && user.isAdmin;
+  const options = document.getElementById("postMenuOptions");
+  if (!options) return;
+  options.innerHTML = `
+    ${isOwner || isAdmin ? `
+      <button class="menu-option danger" onclick="confirmDeletePost(${id})">🗑 Delete Post</button>
+    ` : `
+      <p class="no-results">Only the post owner can delete this post.</p>
+    `}
+    <button class="menu-option" onclick="closeModal('postMenuModal')">Cancel</button>
+  `;
+  document.getElementById("postMenuModal")?.classList.remove("hidden");
+}
+
+/* =========================================================
+   DELETE POST
+========================================================= */
+
+function confirmDeletePost(id) {
+  if (!confirm("Delete this post? This can't be undone.")) return;
+  deletePost(id);
+}
+
+function deletePost(id) {
+  const index = data.posts.findIndex(p => p.id === id);
+  if (index === -1) return;
+  data.posts.splice(index, 1);
+  if (data.social) {
+    Object.values(data.social).forEach(social => {
+      if (Array.isArray(social.reposts)) {
+        social.reposts = social.reposts.filter(r => r.postId !== id);
+      }
+      if (Array.isArray(social.savedPostIds)) {
+        social.savedPostIds = social.savedPostIds.filter(savedId => savedId !== id);
+      }
+      if (social.myReactions && typeof social.myReactions === "object") {
+        delete social.myReactions[id];
+      }
+    });
+  }
+  saveData();
+  closeModal("postMenuModal");
+  closeModal("postViewModal");
+  closeModal("commentsModal");
+  if (activePostId === id) activePostId = null;
+  renderEverything();
+  showMessage("Post deleted.");
+}
+
+/* =========================================================
+   COMMENTS
+========================================================= */
+
+function openComments(id) {
+  activePostId = id;
+  renderCommentsList();
+  const input = document.getElementById("commentInput");
+  if (input) input.value = "";
+  document.getElementById("commentsModal")?.classList.remove("hidden");
+  input?.focus();
+}
+
+function renderCommentsList() {
+  const post = data.posts.find(p => p.id === activePostId);
+  const container = document.getElementById("commentsList");
+  if (!post || !container) return;
+  const list = post.commentsList || [];
+  if (!list.length) {
+    container.innerHTML = `<p class="no-results">No comments yet. Be the first to comment!</p>`;
+    return;
+  }
+  container.innerHTML = list.map(comment => `
+    <div class="comment-item">
+      <div class="avatar">
+        ${comment.avatarImage ? `<img src="${escapeHTML(comment.avatarImage)}" alt="${escapeHTML(comment.name)}">` : escapeHTML(comment.avatar || avatarLetter(comment.name))}
+      </div>
+      <div class="comment-body">
+        <strong>${escapeHTML(comment.name)}</strong>
+        <span>${escapeHTML(comment.text)}</span>
+        <small>${escapeHTML(comment.time)}</small>
+      </div>
+    </div>
+  `).join("");
+  container.scrollTop = container.scrollHeight;
+}
+
+/* =========================================================
+   COMMENT FORM
+========================================================= */
+
+const commentForm = document.getElementById("commentForm");
+if (commentForm) {
+  commentForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    const input = document.getElementById("commentInput");
+    const text = input.value.trim();
+    if (!text || !activePostId) return;
+    const post = data.posts.find(p => p.id === activePostId);
+    if (!post) return;
+    const user = currentUser();
+    if (!user) return;
+
+    if (!post.commentsList) post.commentsList = [];
+    post.commentsList.push({
+      name: user.name,
+      avatar: user.avatar,
+      avatarImage: user.avatarImage || null,
+      text: text,
+      time: "Just now"
+    });
+    post.comments = post.commentsList.length;
+
+
+    saveData();
+    input.value = "";
+    renderCommentsList();
+    renderFeed();
+
+    const postViewModal = document.getElementById("postViewModal");
+    if (postViewModal && !postViewModal.classList.contains("hidden")) {
+      refreshPostView();
+    }
+  });
+}
+
+/* =========================================================
+   POST VIEW
+========================================================= */
+
+function openPostView(id) {
+  const post = data.posts.find(p => p.id === id);
+  if (!post) return;
+  activePostId = id;
+  const content = document.getElementById("postViewContent");
+  if (!content) return;
+  content.innerHTML = postCardHTML(post);
+  document.getElementById("postViewModal")?.classList.remove("hidden");
+}
+
+function refreshPostView() {
+  const post = data.posts.find(p => p.id === activePostId);
+  const content = document.getElementById("postViewContent");
+  if (!post || !content) return;
+  content.innerHTML = postCardHTML(post);
+}
+
+/* =========================================================
+   COMPOSER
+========================================================= */
+
+function openComposer() {
+  const user = currentUser();
+  if (!user) return;
+  const modalName = document.getElementById("modalName");
+  if (modalName) modalName.textContent = user.name;
+  const modalAvatar = document.getElementById("modalAvatar");
+  if (modalAvatar) {
+    if (user.avatarImage) {
+      modalAvatar.innerHTML = `<img src="${escapeHTML(user.avatarImage)}" alt="${escapeHTML(user.name)}">`;
+    } else {
+      modalAvatar.textContent = user.avatar;
+    }
+  }
+  document.getElementById("composerModal")?.classList.remove("hidden");
+  document.getElementById("postText")?.focus();
+}
+
+function closeComposer() {
+  document.getElementById("composerModal")?.classList.add("hidden");
+  const postText = document.getElementById("postText");
+  if (postText) postText.value = "";
+  composerImages = [];
+  composerVideo = null;
+  renderComposerPreview();
+}
+
+function addPhoto() {
+  document.getElementById("postPhotoInput")?.click();
+}
+
+function addAlbum() {
+  document.getElementById("postPhotoInput")?.click();
+}
+
+function addVideo() {
+  document.getElementById("postVideoInput")?.click();
+}
+
+/* =========================================================
+   PHOTO INPUT
+========================================================= */
+
+const postPhotoInput = document.getElementById("postPhotoInput");
+if (postPhotoInput) {
+  postPhotoInput.addEventListener("change", async function () {
+    const files = Array.from(this.files || []);
+    this.value = "";
+    if (!files.length) return;
+    const imageFiles = files.filter(file => file.type.startsWith("image/"));
+    if (!imageFiles.length) {
+      showMessage("Please choose image files.");
+      return;
+    }
+    showMessage(imageFiles.length > 1 ? "Adding photos…" : "Adding photo…");
+    try {
+      const compressed = await Promise.all(
+        imageFiles.map(file => compressImageFile(file, 1600, 0.82))
+      );
+      const urls = await Promise.all(compressed.map(dataUrl => uploadMedia(dataUrl, "image")));
+      composerImages.push(...urls);
+      composerVideo = null;
+      renderComposerPreview();
+    } catch (error) {
+      console.error(error);
+      showMessage((error && error.message) || "Couldn't add one of those photos.");
+    }
+  });
+}
+
+/* =========================================================
+   VIDEO INPUT
+========================================================= */
+
+const postVideoInput = document.getElementById("postVideoInput");
+if (postVideoInput) {
+  postVideoInput.addEventListener("change", async function () {
+    const file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("video/")) {
+      showMessage("Please choose a video file.");
+      return;
+    }
+    if (file.size > MAX_VIDEO_BYTES) {
+      showMessage("That video is too large. Please choose one under 15MB.");
+      return;
+    }
+    showMessage("Adding video…");
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      const url = await uploadMedia(dataUrl, "video");
+      composerVideo = url;
+      composerImages = [];
+      renderComposerPreview();
+    } catch (error) {
+      console.error(error);
+      showMessage((error && error.message) || "Couldn't add that video.");
+    }
+  });
+}
+
+/* =========================================================
+   COMPOSER PREVIEW
+========================================================= */
+
+function removeComposerImage(index) {
+  composerImages.splice(index, 1);
+  renderComposerPreview();
+}
+
+function removeComposerVideo() {
+  composerVideo = null;
+  renderComposerPreview();
+}
+
+function renderComposerPreview() {
+  const preview = document.getElementById("imagePreview");
+  if (!preview) return;
+  if (composerVideo) {
+    preview.innerHTML = `
+      <div class="preview-item">
+        <video src="${escapeHTML(composerVideo)}" controls playsinline></video>
+        <button type="button" class="remove-preview" onclick="removeComposerVideo()">×</button>
+      </div>
+    `;
+    preview.classList.remove("hidden");
+    return;
+  }
+  if (composerImages.length) {
+    preview.innerHTML = composerImages.map((src, index) => `
+      <div class="preview-item">
+        <img src="${escapeHTML(src)}" alt="Selected photo">
+        <button type="button" class="remove-preview" onclick="removeComposerImage(${index})">×</button>
+      </div>
+    `).join("");
+    preview.classList.remove("hidden");
+    return;
+  }
+  preview.innerHTML = "";
+  preview.classList.add("hidden");
+}
+
+/* =========================================================
+   POLL
+========================================================= */
+
+function createPoll() {
+  const question = prompt("What is your poll question?");
+  if (!question || !question.trim()) return;
+  const postText = document.getElementById("postText");
+  if (!postText) return;
+  postText.value = `📊 ${question.trim()}\n\n• Yes\n• Maybe\n• No`;
+}
+
+/* =========================================================
+   PUBLISH POST
+========================================================= */
+
+function publishPost() {
+  const postText = document.getElementById("postText");
+  const text = postText ? postText.value.trim() : "";
+  if (!text && composerImages.length === 0 && !composerVideo) {
+    showMessage("Write something, or add a photo or video first.");
+    return;
+  }
+  const user = currentUser();
+  if (!user) return;
+  const newPost = {
+    id: Date.now() * 1000 + Math.floor(Math.random() * 1000),
+    name: user.name,
+    username: user.username,
+    avatar: user.avatar || avatarLetter(user.name),
+    avatarImage: user.avatarImage || null,
+    text: text || "Shared a moment ✨",
+    reactions: {},
+    comments: 0,
+    commentsList: [],
+    shares: 0,
+    time: "Just now"
+  };
+  if (composerVideo) {
+    newPost.video = composerVideo;
+  } else if (composerImages.length > 1) {
+    newPost.images = composerImages.slice();
+  } else if (composerImages.length === 1) {
+    newPost.image = composerImages[0];
+  }
+  data.posts.unshift(newPost);
+  const saved = saveData();
+  if (!saved) {
+    data.posts.shift();
+    return;
+  }
+  if (postText) {
+    postText.value = "";
+  }
+  composerImages = [];
+  composerVideo = null;
+  renderComposerPreview();
+  closeComposer();
+  renderEverything();
+  openPage("home");
+  showMessage("Your post is live and saved! ✨");
+}
+
+/* =========================================================
+   COMMUNITY MEMBERS PAGE
+   (Formerly "Friends" — everyone is automatically connected,
+   so this is now a simple member directory. There is no add,
+   accept/decline, or remove flow anymore.)
+========================================================= */
+
+function renderFriends(filter = "") {
+  const container = document.getElementById("friendsList");
+  if (!container) return;
+  const current = currentUser();
+  if (!current) {
+    container.innerHTML = "";
+    return;
+  }
+  const term = filter.trim().toLowerCase();
+  let members = otherMembers(current.username);
+  if (term) {
+    members = members.filter(member =>
+      String(member.name || "").toLowerCase().includes(term) ||
+      String(member.username || "").toLowerCase().includes(term)
+    );
+  }
+  members.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  if (!members.length) {
+    container.innerHTML = term
+      ? `<p class="no-results">No members match "${escapeHTML(filter)}".</p>`
+      : `<p class="no-results">No other members yet.</p>`;
+    return;
+  }
+  container.innerHTML = members.map(member => `
+    <div class="friend-card" onclick="openUserProfile('${escapeHTML(member.username)}')">
+      <div class="avatar">
+        ${member.avatarImage ? `<img src="${escapeHTML(member.avatarImage)}" alt="${escapeHTML(member.name)}">` : escapeHTML(member.avatar || avatarLetter(member.name))}
+      </div>
+      <div class="friend-info">
+        <strong>${escapeHTML(member.name)}</strong>
+        <small>${escapeHTML(member.username)}</small>
+      </div>
+    </div>
+  `).join("");
+}
+
+function filterFriends() {
+  const input = document.getElementById("friendSearchInput");
+  renderFriends(input ? input.value : "");
+}
+
+function renderSidebarMembers() {
+  const container = document.getElementById("sidebarMembersList");
+  if (!container) return;
+  const current = currentUser();
+  if (!current) {
+    container.innerHTML = "";
+    return;
+  }
+  const members = otherMembers(current.username)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+    .slice(0, 6);
+  if (!members.length) {
+    container.innerHTML = `<p class="no-results">No other members yet.</p>`;
+    return;
+  }
+  container.innerHTML = members.map(member => `
+    <div class="sidebar-member" onclick="openUserProfile('${escapeHTML(member.username)}')">
+      <div class="avatar">
+        ${member.avatarImage ? `<img src="${escapeHTML(member.avatarImage)}" alt="${escapeHTML(member.name)}">` : escapeHTML(member.avatar || avatarLetter(member.name))}
+      </div>
+      <strong>${escapeHTML(member.name)}</strong>
+    </div>
+  `).join("");
+}
+
+// Kept as a no-op redirect so any old bookmark or shortcut that
+// still calls openFriendsModal() doesn't break — there's no
+// add-friend flow anymore since every account is already
+// connected to every other account.
+function openFriendsModal() {
+  openPage("friends");
+  showMessage("Everyone at Nea's Boarding Horse is already connected — no need to add anyone!");
+}
+
+/* =========================================================
+   VIEW ANOTHER MEMBER'S PROFILE
+   Every member can always see every other member's profile
+   and posts — there's no locked/friends-only state anymore.
+========================================================= */
+
+function openUserProfile(username) {
+  const current = currentUser();
+  if (!current) return;
+
+  if (usernamesMatch(username, current.username)) {
+    closeModal("userProfileModal");
+    openPage("profile");
+    return;
+  }
+
+  const person = findUser(username);
+  if (!person) {
+    showMessage("Member not found.");
+    return;
+  }
+
+  viewingUsername = person.username;
+  renderUserProfileModal();
+  document.getElementById("userProfileModal")?.classList.remove("hidden");
+}
+
+function renderUserProfileModal() {
+  const content = document.getElementById("userProfileContent");
+  if (!content) return;
+  const person = findUser(viewingUsername);
+  if (!person) return;
+
+  const avatarHTML = person.avatarImage
+    ? `<img src="${escapeHTML(person.avatarImage)}" alt="${escapeHTML(person.name)}">`
+    : escapeHTML(person.avatar || avatarLetter(person.name));
+
+  const coverStyle = person.bannerImage
+    ? `style="background-image:url('${escapeHTML(person.bannerImage)}');background-size:cover;background-position:center;"`
+    : "";
+
+  const ownPosts = data.posts.filter(post => post.username && usernamesMatch(post.username, person.username));
+
+  content.innerHTML = `
+    <div class="profile-cover" ${coverStyle}></div>
+    <div class="user-profile-header">
+      <div class="avatar large">${avatarHTML}</div>
+      <div>
+        <h2>${escapeHTML(person.name)}</h2>
+        <p>${escapeHTML(person.username)}</p>
+        <span class="privacy">Community Member</span>
+      </div>
+    </div>
+    <p class="user-profile-bio">${escapeHTML(person.bio || "")}</p>
+    <div class="profile-grid">
+      ${
+        ownPosts.length
+          ? ownPosts.filter(p => p.image || (p.images && p.images.length)).slice(0, 9).map(p => `
+              <div onclick="closeModal('userProfileModal'); openPostView(${p.id})">
+                <img src="${escapeHTML(p.image || p.images[0])}" alt="Post">
+              </div>
+            `).join("")
+          : `<p class="no-results">No photos yet.</p>`
+      }
+    </div>
+  `;
+}
+
+/* =========================================================
+   NOTIFICATIONS
+========================================================= */
+
+function notifyUser(username, notification) {
+  const social = ensureSocialFor(username);
+  social.notifications.unshift(notification);
+  maybeShowSystemNotification(username, notification);
+}
+
+function renderNotifications() {
+  const list = document.getElementById("notificationsList");
+  if (!list) return;
+  const social = ensureSocial();
+
+  const permissionBanner = renderNotificationPermissionBanner();
+
+  if (!social.notifications.length) {
+    list.innerHTML = `${permissionBanner}<p class="no-results">You're all caught up.</p>`;
+    return;
+  }
+  list.innerHTML = permissionBanner + social.notifications.map((n, index) => `
+    <div class="notification" onclick="handleNotificationClick(${index})" role="button" tabindex="0">
+      <div class="avatar">
+        ${escapeHTML(n.avatar || avatarLetter(n.name))}
+      </div>
+      <div class="notification-info">
+        <strong>${escapeHTML(n.name)}</strong>
+        ${escapeHTML(n.text)}
+        <br>
+        <small>${escapeHTML(n.time)}</small>
+      </div>
+      ${n.unread ? `<i class="notification-dot"></i>` : ""}
+    </div>
+  `).join("");
+}
+
+function renderNotificationPermissionBanner() {
+  if (typeof Notification === "undefined") return "";
+  if (Notification.permission === "granted" || Notification.permission === "denied") return "";
+  return `
+    <div class="notification-permission-banner">
+      <span>Turn on alerts to get notifications the moment something happens, even in another tab.</span>
+      <button onclick="requestNotificationPermission()">Turn On</button>
+    </div>
+  `;
+}
+
+function requestNotificationPermission() {
+  if (typeof Notification === "undefined") {
+    showMessage("Your browser doesn't support notifications.");
+    return;
+  }
+  Notification.requestPermission().then(permission => {
+    if (permission === "granted") {
+      showMessage("Notifications turned on!");
+    } else {
+      showMessage("Notifications are off. You can turn them on later from your browser settings.");
+    }
+    renderNotifications();
+  });
+}
+
+function maybeShowSystemNotification(username, notification) {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  if (!session || !usernamesMatch(username, session.username)) return;
+  try {
+    new Notification(`${notification.name} — Nea's Boarding Horse`, {
+      body: notification.text,
+      tag: "nbh-notification"
+    });
+  } catch (error) {
+    console.error("Could not show system notification.", error);
+  }
+}
+
+function handleNotificationClick(index) {
+  const social = ensureSocial();
+  const notification = social.notifications[index];
+  if (!notification) return;
+
+  notification.unread = false;
+  saveData();
+  updateNotificationDot();
+
+  if (notification.postId != null && data.posts.some(p => p.id === notification.postId)) {
+    openPostView(notification.postId);
+  } else {
+    renderNotifications();
+  }
+}
+
+function clearNotifications() {
+  const social = ensureSocial();
+  social.notifications.forEach(n => { n.unread = false; });
+  saveData();
+  renderNotifications();
+  updateNotificationDot();
+  showMessage("Notifications cleared.");
+}
+
+function updateNotificationDot() {
+  const social = ensureSocial();
+  const unread = social.notifications.some(n => n.unread);
+  ["notificationDot", "notificationDotRail"].forEach(id => {
+    const dot = document.getElementById(id);
+    if (dot) dot.style.display = unread ? "block" : "none";
+  });
+}
+
+/* =========================================================
+   PROFILE
+========================================================= */
+
+function switchProfileTab(tab) {
+  activeProfileTab = tab;
+  document.getElementById("postsTabButton")?.classList.toggle("active", tab === "posts");
+  document.getElementById("repostsTabButton")?.classList.toggle("active", tab === "reposts");
+  document.getElementById("profileGrid")?.classList.toggle("hidden", tab !== "posts");
+  document.getElementById("repostsGrid")?.classList.toggle("hidden", tab !== "reposts");
+  document.getElementById("albumsHeader")?.classList.toggle("hidden", tab !== "posts");
+  document.getElementById("albumsGrid")?.classList.toggle("hidden", tab !== "posts");
+}
+
+function renderProfile() {
+  const user = currentUser();
+  if (!user) return;
+  const social = ensureSocial();
+  const ownPosts = data.posts.filter(post => post.username && usernamesMatch(post.username, user.username));
+  const savedPosts = data.posts.filter(post => social.savedPostIds.includes(post.id));
+  const postCount = document.getElementById("postCount");
+  if (postCount) postCount.textContent = ownPosts.length;
+  const friendCount = document.getElementById("friendCount");
+  if (friendCount) friendCount.textContent = otherMembers(user.username).length;
+  const updateCount = document.getElementById("updateCount");
+  if (updateCount) updateCount.textContent = savedPosts.length;
+  const reactionsCount = Object.keys(social.myReactions || {}).length;
+  const reactionCount = document.getElementById("reactionCount");
+  if (reactionCount) reactionCount.textContent = reactionsCount;
+  const gridPosts = ownPosts.filter(post => post.image || (post.images && post.images.length));
+  const grid = document.getElementById("profileGrid");
+  if (grid) {
+    grid.innerHTML = gridPosts.length
+      ? gridPosts.slice(0, 9).map(post => `
+        <div onclick="openPostView(${post.id})">
+          <img src="${escapeHTML(post.image || post.images[0])}" alt="Post">
+        </div>
+      `).join("")
+      : `<p class="no-results">No photos yet.</p>`;
+  }
+  renderReposts(social);
+  renderAlbums();
+  renderSidebarMembers();
+}
+
+function renderReposts(social) {
+  const grid = document.getElementById("repostsGrid");
+  if (!grid) return;
+  const reposts = (social.reposts || [])
+    .map(r => ({ repost: r, post: data.posts.find(p => p.id === r.postId) }))
+    .filter(entry => entry.post);
+
+  if (!reposts.length) {
+    grid.innerHTML = `<p class="no-results">You haven't reposted anything yet. Tap the repost icon on a post to repost it here.</p>`;
+    return;
+  }
+
+  grid.innerHTML = reposts.map(({ post }) => {
+    const thumb = post.image || (post.images && post.images[0]);
+    return `
+      <div onclick="closeModal('userProfileModal'); openPostView(${post.id})">
+        <span class="repost-badge">Reposted</span>
+        ${thumb
+          ? `<img src="${escapeHTML(thumb)}" alt="Reposted post">`
+          : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--pink-light);padding:8px;text-align:center;font-size:12px;color:var(--muted);">${escapeHTML((post.text || "").slice(0, 60))}</div>`
+        }
+      </div>
+    `;
+  }).join("");
+}
+
+function openEditProfile() {
+  const user = currentUser();
+  if (!user) return;
+  const nameInput = document.getElementById("editName");
+  if (nameInput) nameInput.value = user.name;
+  const bioInput = document.getElementById("editBio");
+  if (bioInput) bioInput.value = user.bio;
+  document.getElementById("editModal")?.classList.remove("hidden");
+}
+
+function saveProfile() {
+  const user = currentUser();
+  if (!user) return;
+  const name = document.getElementById("editName")?.value.trim();
+  const bio = document.getElementById("editBio")?.value.trim();
+  if (name) {
+    user.name = name;
+    user.avatar = avatarLetter(name);
+  }
+  if (bio !== undefined) {
+    user.bio = bio;
+  }
+  saveData();
+  renderEverything();
+  closeModal("editModal");
+  showMessage("Profile updated!");
+}
+
+/* =========================================================
+   CHANGE PASSWORD
+   Lets a logged-in member change their own password from the
+   profile. Requires the current password to match (unless
+   the account has none set, e.g. the admin account), then
+   the new password twice for confirmation.
+========================================================= */
+
+function openChangePassword() {
+  const user = currentUser();
+  if (!user) return;
+  ["currentPassword", "newPassword", "confirmNewPassword"].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.value = "";
+  });
+  setChangePasswordError("");
+  document.getElementById("changePasswordModal")?.classList.remove("hidden");
+  document.getElementById("currentPassword")?.focus();
+}
+
+function closeChangePassword() {
+  closeModal("changePasswordModal");
+}
+
+function setChangePasswordError(message) {
+  const el = document.getElementById("changePasswordError");
+  if (!el) return;
+  if (!message) {
+    el.classList.add("hidden");
+    el.textContent = "";
+  } else {
+    el.classList.remove("hidden");
+    el.textContent = message;
+  }
+}
+
+const changePasswordForm = document.getElementById("changePasswordForm");
+if (changePasswordForm) {
+  changePasswordForm.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    setChangePasswordError("");
+
+    const user = currentUser();
+    if (!user) return;
+
+    const currentPassword = document.getElementById("currentPassword")?.value || "";
+    const newPassword = document.getElementById("newPassword")?.value || "";
+    const confirmNewPassword = document.getElementById("confirmNewPassword")?.value || "";
+
+    if (!newPassword || newPassword.length < 6) {
+      setChangePasswordError("New password must be at least 8 characters.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setChangePasswordError("New password must be different from your current password.");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setChangePasswordError("New passwords don't match.");
+      return;
+    }
+
+    const submitButton = changePasswordForm.querySelector("button[type='submit']");
+    if (submitButton) submitButton.disabled = true;
+    try {
+      await api("/api/auth/change-password", { method: "POST", body: { currentPassword, newPassword } });
+      closeChangePassword();
+      showMessage("Password updated!");
+    } catch (error) {
+      setChangePasswordError(error.message || "Could not update password.");
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
+  });
+}
+
+/* =========================================================
+   ALBUMS
+========================================================= */
+
+function getAlbums() {
+  return ensureSocial().albums;
+}
+
+function renderAlbums() {
+  const container = document.getElementById("albumsGrid");
+  if (!container) return;
+  const albums = getAlbums();
+  if (!albums.length) {
+    container.innerHTML = `<p class="no-results">No albums yet. Create one to start collecting photos.</p>`;
+    return;
+  }
+  container.innerHTML = albums.map(album => `
+    <button type="button" class="album-card" onclick="openAlbum('${escapeHTML(album.id)}')">
+      <div class="album-cover">
+        ${album.images[0]
+          ? `<img src="${escapeHTML(album.images[0])}" alt="${escapeHTML(album.name)}">`
+          : `<div class="album-empty">🗂</div>`
+        }
+      </div>
+      <strong>${escapeHTML(album.name)}</strong>
+      <small>${album.images.length} photo${album.images.length === 1 ? "" : "s"}</small>
+    </button>
+  `).join("");
+}
+
+function createAlbum() {
+  const name = prompt("Name your new album:");
+  if (!name || !name.trim()) return;
+  getAlbums().push({
+    id: "album_" + Date.now(),
+    name: name.trim(),
+    images: []
+  });
+  saveData();
+  renderAlbums();
+  showMessage("Album created! Open it to start adding photos.");
+}
+
+function openAlbum(id) {
+  activeAlbumId = id;
+  const album = getAlbums().find(a => a.id === id);
+  if (!album) return;
+  const title = document.getElementById("albumModalTitle");
+  if (title) title.textContent = album.name;
+  renderAlbumModalGrid();
+  document.getElementById("albumModal")?.classList.remove("hidden");
+}
+
+function renderAlbumModalGrid() {
+  const album = getAlbums().find(a => a.id === activeAlbumId);
+  const grid = document.getElementById("albumModalGrid");
+  if (!album || !grid) return;
+  if (!album.images.length) {
+    grid.innerHTML = `<p class="no-results">No photos yet. Tap "+ Add" to add your first one.</p>`;
+    return;
+  }
+  grid.innerHTML = album.images.map((src, index) => `
+    <div class="album-photo">
+      <img src="${escapeHTML(src)}" alt="${escapeHTML(album.name)} photo">
+      <button onclick="removePhotoFromAlbum(${index})" aria-label="Remove photo">×</button>
+    </div>
+  `).join("");
+}
+
+function addPhotoToAlbum() {
+  document.getElementById("albumPhotoInput")?.click();
+}
+
+const albumPhotoInput = document.getElementById("albumPhotoInput");
+if (albumPhotoInput) {
+  albumPhotoInput.addEventListener("change", async function () {
+    const files = Array.from(this.files || []);
+    this.value = "";
+    if (!files.length) return;
+    const album = getAlbums().find(a => a.id === activeAlbumId);
+    if (!album) return;
+    const imageFiles = files.filter(file => file.type.startsWith("image/"));
+    if (!imageFiles.length) {
+      showMessage("Please choose image files.");
+      return;
+    }
+    showMessage(imageFiles.length > 1 ? "Adding photos…" : "Adding photo…");
+    try {
+      const compressed = await Promise.all(
+        imageFiles.map(file => compressImageFile(file, 1400, 0.82))
+      );
+      const urls = await Promise.all(compressed.map(dataUrl => uploadMedia(dataUrl, "image")));
+      album.images.push(...urls);
+      if (saveData()) {
+        renderAlbumModalGrid();
+        renderAlbums();
+        showMessage("Photo added to album!");
+      }
+    } catch (error) {
+      console.error(error);
+      showMessage((error && error.message) || "Couldn't add one of those photos.");
+    }
+  });
+}
+
+function removePhotoFromAlbum(index) {
+  const album = getAlbums().find(a => a.id === activeAlbumId);
+  if (!album) return;
+  if (!confirm("Remove this photo from the album?")) return;
+  album.images.splice(index, 1);
+  saveData();
+  renderAlbumModalGrid();
+  renderAlbums();
+}
+
+/* =========================================================
+   MODALS
+========================================================= */
+
+function closeModal(id) {
+  document.getElementById(id)?.classList.add("hidden");
+}
+
+/* ---------------------------------------------------------
+   In-app prompt/confirm — replaces window.prompt()/confirm().
+   Native browser dialogs can't be styled (they render outside
+   the page, as plain browser chrome), so admin actions like
+   renaming an account or confirming a delete use this themed
+   modal instead. Same call shape as the native versions:
+   appPrompt() resolves to the entered string, or null if
+   cancelled; appConfirm() resolves to true/false.
+--------------------------------------------------------- */
+
+let promptModalResolve = null;
+
+function openPromptModal({ title, message, okLabel = "OK", cancelLabel = "Cancel", showInput = false, inputType = "text", defaultValue = "", danger = false }) {
+  return new Promise(resolve => {
+    // If one of these is already open, cancel it rather than leaving its
+    // promise dangling forever.
+    if (promptModalResolve) resolvePromptModal(showInput ? null : false);
+
+    promptModalResolve = resolve;
+    document.getElementById("promptModalTitle").textContent = title;
+    document.getElementById("promptModalMessage").textContent = message;
+
+    const inputWrap = document.getElementById("promptModalInputWrap");
+    const input = document.getElementById("promptModalInput");
+    inputWrap.classList.toggle("hidden", !showInput);
+    if (showInput) {
+      input.type = inputType;
+      input.value = defaultValue;
+    }
+
+    const okButton = document.getElementById("promptModalOk");
+    okButton.textContent = okLabel;
+    okButton.classList.toggle("danger-button", danger);
+    okButton.classList.toggle("primary-btn", !danger);
+    document.getElementById("promptModalCancel").textContent = cancelLabel;
+
+    document.getElementById("promptModal").classList.remove("hidden");
+    if (showInput) {
+      // Let the modal finish becoming visible before focusing.
+      setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
+  });
+}
+
+function resolvePromptModal(value) {
+  document.getElementById("promptModal")?.classList.add("hidden");
+  const resolve = promptModalResolve;
+  promptModalResolve = null;
+  if (resolve) resolve(value);
+}
+
+function appPrompt(message, { title = "Nea's Boarding Horse", okLabel = "OK", cancelLabel = "Cancel", defaultValue = "", inputType = "text" } = {}) {
+  return openPromptModal({ title, message, okLabel, cancelLabel, showInput: true, inputType, defaultValue });
+}
+
+function appConfirm(message, { title = "Please confirm", okLabel = "Confirm", cancelLabel = "Cancel", danger = false } = {}) {
+  return openPromptModal({ title, message, okLabel, cancelLabel, showInput: false, danger });
+}
+
+document.getElementById("promptModalOk")?.addEventListener("click", () => {
+  const isPrompt = !document.getElementById("promptModalInputWrap")?.classList.contains("hidden");
+  resolvePromptModal(isPrompt ? document.getElementById("promptModalInput").value : true);
 });
+
+document.getElementById("promptModalCancel")?.addEventListener("click", () => {
+  const isPrompt = !document.getElementById("promptModalInputWrap")?.classList.contains("hidden");
+  resolvePromptModal(isPrompt ? null : false);
+});
+
+document.getElementById("promptModalInput")?.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    document.getElementById("promptModalOk")?.click();
+  }
+});
+
+// The app already hides any open .modal on a backdrop click or Escape
+// (see the window "click"/"keydown" listeners below) — but that only
+// toggles the CSS class, so a pending appPrompt()/appConfirm() promise
+// needs to be resolved the same way those paths close the modal.
+document.getElementById("promptModal")?.addEventListener("click", event => {
+  if (event.target.id === "promptModal") {
+    const isPrompt = !document.getElementById("promptModalInputWrap")?.classList.contains("hidden");
+    resolvePromptModal(isPrompt ? null : false);
+  }
+});
+
+window.addEventListener("keydown", event => {
+  if (event.key === "Escape" && promptModalResolve && !document.getElementById("promptModal")?.classList.contains("hidden")) {
+    const isPrompt = !document.getElementById("promptModalInputWrap")?.classList.contains("hidden");
+    resolvePromptModal(isPrompt ? null : false);
+  }
+});
+
+window.addEventListener("click", function (event) {
+  if (event.target.classList.contains("modal")) {
+    event.target.classList.add("hidden");
+  }
+});
+
+window.addEventListener("keydown", function (event) {
+  if (event.key !== "Escape") return;
+  document.querySelectorAll(".modal:not(.hidden)").forEach(modal => modal.classList.add("hidden"));
+});
+
+/* =========================================================
+   PASSWORD TOGGLE
+========================================================= */
+
+function togglePassword(id) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const button = document.getElementById(id + "Toggle");
+  const showing = input.type === "password";
+  input.type = showing ? "text" : "password";
+  if (button) {
+    button.innerHTML = `<span class="icon">${iconSVG(showing ? "eyeOff" : "eye")}</span>`;
+    button.setAttribute("aria-label", showing ? "Hide password" : "Show password");
+  }
+}
+
+/* =========================================================
+   RENDER EVERYTHING
+========================================================= */
+
+function renderEverything() {
+  renderUser();
+  renderFeed();
+  renderFriends();
+  renderNotifications();
+  renderProfile();
+  switchProfileTab(activeProfileTab);
+  updateNotificationDot();
+}
+
+/* =========================================================
+   STARTUP
+   Checks whether the browser already has a valid session
+   cookie (e.g. the member reloaded the page or came back
+   later) before deciding whether to show the login screen
+   or drop them straight into the app.
+========================================================= */
+
+async function startup() {
+  initTheme();
+  applyStaticIcons();
+
+  try {
+    session = await api("/api/auth/me");
+    await loadStateAndEnter();
+  } catch (error) {
+    session = null;
+    showWelcome();
+  }
+}
+
+startup();
+
+/* =========================================================
+   PWA: SERVICE WORKER REGISTRATION
+   Lets the browser install this site as an app (Add to Home
+   Screen / desktop install) and caches the static shell for
+   fast reloads. Safe to leave in even if you never deploy
+   over HTTPS locally — registration just silently no-ops on
+   plain http://localhost in some browsers.
+========================================================= */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch((err) => {
+      console.warn("Service worker registration failed:", err);
+    });
+  });
+}
