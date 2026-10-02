@@ -2151,3 +2151,15 @@ html[data-theme="dark"] .profile-cover {
     border-radius: 8px;
 }
 .comment-delete:hover { color: #c0392b; background: var(--surface-alt); }
+
+/* Private birthday field (Edit Profile) */
+.birthday-field {
+  border: 1px solid var(--border, rgba(0,0,0,.12));
+  border-radius: 12px;
+  margin: 12px 0 4px;
+  padding: 10px 12px 12px;
+}
+.birthday-field legend { font-weight: 600; padding: 0 6px; }
+.birthday-field legend small { font-weight: 400; opacity: .7; }
+.birthday-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.birthday-row select, .birthday-row input { flex: 1 1 90px; min-width: 0; padding: 8px; border-radius: 8px; border: 1px solid var(--border, rgba(0,0,0,.2)); background: inherit; color: inherit; }
