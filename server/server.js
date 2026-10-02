@@ -1050,6 +1050,70 @@ app.post("/api/push/unsubscribe", requireAuth, ah(async (req, res) => {
 // ---------------------------------------------------------
 // Every admin operation is checked on the server. The frontend
 // never gets to decide whether a user is an administrator.
+// ---------------------------------------------------------
+// PRIVATE BIRTHDAYS
+// A member can set / change / remove ONLY their own birthday. Only admins can
+// list everyone's. Stored in its own Firestore doc (nbh/birthdays), never in
+// the shared state that /api/state sends to members.
+// ---------------------------------------------------------
+function birthdayDaysInMonth(month, year) {
+  return new Date(year || 2024, month, 0).getDate(); // 2024 is a leap year, so Feb 29 is allowed
+}
+
+function parseBirthday(body) {
+  const month = Number(body && body.month);
+  const day = Number(body && body.day);
+  const hasYear = body && body.year !== undefined && body.year !== null && body.year !== "";
+  const year = hasYear ? Number(body.year) : null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > birthdayDaysInMonth(month)) return null;
+  if (hasYear) {
+    if (!Number.isInteger(year) || year < 1900 || year > new Date().getFullYear()) return null;
+    if (day > birthdayDaysInMonth(month, year)) return null; // e.g. Feb 29 in a non-leap year
+  }
+  return { month, day, year };
+}
+
+app.get("/api/me/birthday", requireAuth, ah(async (req, res) => {
+  const b = await store.getBirthday(req.user.username);
+  res.json(b ? { month: b.month, day: b.day, year: b.year || null } : null);
+}));
+
+app.put("/api/me/birthday", requireAuth, ah(async (req, res) => {
+  const parsed = parseBirthday(req.body);
+  if (!parsed) return res.status(400).json({ error: "Please enter a valid birthday." });
+  await store.saveBirthday(req.user.username, parsed);
+  res.json({ ok: true });
+}));
+
+app.delete("/api/me/birthday", requireAuth, ah(async (req, res) => {
+  await store.deleteBirthday(req.user.username);
+  res.json({ ok: true });
+}));
+
+// Admin only. Raw month/day are returned; the admin's browser works out
+// "days until" using its own local date, so time zones never cause an off-by-one.
+app.get("/api/admin/birthdays", requireAdmin, ah(async (req, res) => {
+  const state = await readState();
+  const entries = await store.readBirthdays();
+  const list = entries
+    .map(b => {
+      const user = state.users.find(u => String(u.username).toLowerCase() === String(b.username).toLowerCase());
+      if (!user) return null;
+      return {
+        username: user.username,
+        name: user.name || user.username,
+        avatar: user.avatar || "U",
+        avatarImage: user.avatarImage || null,
+        month: b.month,
+        day: b.day,
+        year: b.year || null
+      };
+    })
+    .filter(Boolean);
+  res.json(list);
+}));
+
 app.get("/api/admin/overview", requireAdmin, ah(async (req, res) => {
   const state = await readState();
   const credentials = await readCredentials();
@@ -1138,6 +1202,7 @@ app.delete("/api/admin/users/:username", requireAdmin, ah(async (req, res) => {
   state.posts = state.posts.filter(p => !p.username || p.username.toLowerCase() !== user.username.toLowerCase());
   await writeCredentials(credentials);
   await writeState(state);
+  await store.deleteBirthday(user.username).catch(() => {});
   res.json({ ok: true });
 }));
 
