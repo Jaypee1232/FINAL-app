@@ -308,6 +308,15 @@ async function pollState() {
 function startPolling() {
   stopPolling();
   pollTimer = setInterval(pollState, 7000);
+  // Keep "7 minutes ago" labels ticking forward without needing new data.
+  if (!window.__stampTimer) {
+    window.__stampTimer = setInterval(() => {
+      if (!session || anyModalOpen()) return;
+      renderFeed();
+      const cm = document.getElementById("commentsModal");
+      if (cm && !cm.classList.contains("hidden")) renderCommentsList();
+    }, 60000);
+  }
 }
 
 function stopPolling() {
@@ -335,6 +344,35 @@ function showMessage(message) {
 
 function avatarLetter(name) {
   return name ? name.charAt(0).toUpperCase() : "N";
+}
+
+// Relative time like "7 hours ago". Older items that only have the text
+// "Just now" / "2h ago" (no saved timestamp) keep showing that text.
+function plural(n, word) {
+  return n + " " + word + (n === 1 ? "" : "s") + " ago";
+}
+
+function formatStamp(createdAt, fallback) {
+  if (typeof createdAt !== "number" || !isFinite(createdAt)) return fallback || "";
+  const seconds = Math.max(0, Math.floor((Date.now() - createdAt) / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return plural(Math.max(1, minutes), "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return plural(hours, "hour");
+  const days = Math.floor(hours / 24);
+  if (days < 7) return plural(days, "day");
+  const weeks = Math.floor(days / 7);
+  if (days < 30) return plural(weeks, "week");
+  return new Date(createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Full date + time, shown when hovering/long-pressing the relative time.
+function fullStamp(createdAt) {
+  if (typeof createdAt !== "number" || !isFinite(createdAt)) return "";
+  const d = new Date(createdAt);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+    " \u00b7 " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function escapeHTML(value) {
@@ -944,7 +982,7 @@ function postCardHTML(post, options = {}) {
         </div>
         <div class="post-user" ${post.username ? `onclick="openUserProfile('${escapeHTML(post.username)}')"` : ""}>
           <strong>${escapeHTML(author.name)}</strong>
-          <small>${escapeHTML(post.time)} · Community</small>
+          <small title="${escapeHTML(fullStamp(post.createdAt))}">${escapeHTML(typeof post.createdAt === "number" ? "Posted " + formatStamp(post.createdAt) : post.time)} · Community</small>
         </div>
         <button onclick="openPostMenu(${post.id})" aria-label="Post options"><span class="icon">${iconSVG("moreHorizontal")}</span></button>
       </div>
@@ -1175,7 +1213,7 @@ function renderCommentsList() {
       <div class="comment-body">
         <strong>${escapeHTML(comment.name)}</strong>
         <span>${escapeHTML(comment.text)}</span>
-        <small>${escapeHTML(comment.time)}</small>
+        <small title="${escapeHTML(fullStamp(comment.createdAt))}">${escapeHTML(formatStamp(comment.createdAt, comment.time))}</small>
       </div>
       ${canDelete ? `<button type="button" class="comment-delete" aria-label="Delete comment" title="Delete comment" onclick="deleteComment(${post.id}, '${escapeHTML(comment.id)}')">&times;</button>` : ""}
     </div>
@@ -1222,7 +1260,8 @@ if (commentForm) {
       avatar: user.avatar,
       avatarImage: user.avatarImage || null,
       text: text,
-      time: "Just now"
+      time: "Just now",
+      createdAt: Date.now()
     });
     post.comments = post.commentsList.length;
 
@@ -1442,7 +1481,8 @@ function publishPost() {
     comments: 0,
     commentsList: [],
     shares: 0,
-    time: "Just now"
+    time: "Just now",
+    createdAt: Date.now()
   };
   if (composerVideo) {
     newPost.video = composerVideo;
@@ -1683,7 +1723,7 @@ function renderNotifications() {
         <strong>${escapeHTML(n.name)}</strong>
         ${escapeHTML(n.text)}
         <br>
-        <small>${escapeHTML(n.time)}</small>
+        <small title="${escapeHTML(fullStamp(n.createdAt))}">${escapeHTML(formatStamp(n.createdAt, n.time))}</small>
       </div>
       ${n.unread ? `<i class="notification-dot"></i>` : ""}
     </div>
