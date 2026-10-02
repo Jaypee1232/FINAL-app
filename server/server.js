@@ -1,4 +1,4 @@
-console.log("BUILD 2026-10-02-c follow-newmembers-comments-videos");
+console.log("BUILD 2026-10-02-e push-notifications");
 /* =========================================================
    NEA'S BOARDING HORSE — BACKEND SERVER
    Express + Firestore + Cloudinary.
@@ -227,6 +227,84 @@ function defaultSocialFor() {
 const store = require("./firestore-store");
 const { readState, writeState, readCredentials, writeCredentials } = store;
 
+// ---------------------------------------------------------
+// PUSH NOTIFICATIONS
+//  - Browsers / installed web app: Web Push (needs VAPID_PUBLIC_KEY,
+//    VAPID_PRIVATE_KEY and optionally VAPID_SUBJECT in the environment).
+//  - Android app: Firebase Cloud Messaging through the same Firebase
+//    service account Firestore already uses (no extra server setup).
+// Pushes are best-effort: a failure here never breaks saving a post.
+// ---------------------------------------------------------
+let webpush = null;
+try { webpush = require("web-push"); } catch (err) { console.warn("[push] web-push package not installed — browser push disabled."); }
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+let WEB_PUSH_READY = false;
+if (webpush && VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(process.env.VAPID_SUBJECT || "mailto:admin@example.com", VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+    WEB_PUSH_READY = true;
+  } catch (err) {
+    console.error("[push] Invalid VAPID keys — browser push disabled:", err.message);
+  }
+} else {
+  console.warn("[push] VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set — browser push disabled (Android push still works).");
+}
+
+function pushId(key) {
+  return crypto.createHash("sha256").update(String(key)).digest("hex");
+}
+
+async function deliverPushes(items) {
+  try {
+    if (!Array.isArray(items) || !items.length) return;
+    const subs = await store.readPushSubs();
+    const entries = Object.entries(subs).filter(([, s]) => s && s.username);
+    if (!entries.length) return;
+    const jobs = [];
+    for (const { username, notification } of items) {
+      if (!notification) continue;
+      const payload = {
+        title: "Nea's Boarding Horse",
+        body: `${notification.name || "Someone"} ${notification.text || ""}`.trim().slice(0, 180),
+        postId: typeof notification.postId === "number" ? notification.postId : null,
+        tag: notification.postId != null ? "post-" + notification.postId : "nbh"
+      };
+      for (const [id, sub] of entries) {
+        if (String(sub.username).toLowerCase() !== String(username).toLowerCase()) continue;
+        jobs.push(sendOnePush(id, sub, payload));
+      }
+    }
+    await Promise.allSettled(jobs);
+  } catch (err) {
+    console.error("[push] delivery failed:", err.message);
+  }
+}
+
+async function sendOnePush(id, sub, payload) {
+  try {
+    if (sub.type === "web") {
+      if (!WEB_PUSH_READY) return;
+      await webpush.sendNotification(sub.subscription, JSON.stringify(payload), { TTL: 60 * 60 * 24 });
+    } else if (sub.type === "fcm") {
+      await store.getMessaging().send({
+        token: sub.token,
+        notification: { title: payload.title, body: payload.body },
+        data: { postId: payload.postId == null ? "" : String(payload.postId) },
+        android: { priority: "high", notification: { tag: payload.tag } }
+      });
+    }
+  } catch (err) {
+    const dead = err && (err.statusCode === 404 || err.statusCode === 410 ||
+      err.code === "messaging/registration-token-not-registered" ||
+      err.code === "messaging/invalid-registration-token");
+    if (dead) {
+      await store.deletePushSub(id).catch(() => {});
+    } else {
+      console.warn("[push] send failed:", (err && (err.code || err.statusCode)) || "", (err && err.message) || "");
+    }
+  }
+}
+
 function findCredentialKey(credentials, username) {
   const target = String(username || "").trim().toLowerCase();
   return Object.keys(credentials).find(k => k.toLowerCase() === target) || null;
@@ -369,6 +447,7 @@ app.post("/api/auth/login", loginLimiter, ah(async (req, res) => {
     avatar: user.avatar,
     text: "logged in",
     time: "Just now",
+    createdAt: Date.now(),
     unread: true
   });
   await writeState(state);
@@ -565,6 +644,7 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     base.avatarImage = currentPost ? currentPost.avatarImage : (authorProfile.avatarImage || null);
     base.text = clampString(incomingPost.text, MAX_TEXT_LEN);
     base.time = currentPost ? base.time : "Just now";
+    if (!currentPost) base.createdAt = Date.now();
     base.image = typeof incomingPost.image === "string" ? clampString(incomingPost.image, 2000) : null;
     base.images = Array.isArray(incomingPost.images) ? clampStringArray(incomingPost.images, MAX_IMAGES_PER_POST, 2000) : undefined;
     if (!base.images || !base.images.length) delete base.images;
@@ -600,7 +680,8 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     avatar: authorProfile.avatar,
     avatarImage: authorProfile.avatarImage || null,
     text: clampString(c && c.text, MAX_COMMENT_LEN),
-    time: "Just now"
+    time: "Just now",
+    createdAt: Date.now()
   })).filter(c => c.text.trim().length > 0).slice(0, 20);
   const finalComments = oldComments.concat(appended);
   base.commentsList = finalComments;
@@ -630,6 +711,7 @@ function sanitizeOwnSocial(incoming) {
       avatarImage: typeof n.avatarImage === "string" ? clampString(n.avatarImage, 2000) : null,
       text: clampString(n.text, 300),
       time: clampString(n.time, 100),
+      createdAt: typeof n.createdAt === "number" ? n.createdAt : null,
       unread: !!n.unread,
       postId: typeof n.postId === "number" ? n.postId : null
     })),
@@ -828,8 +910,10 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
   // forging notifications for other accounts.
   const oldOwnSocial = current.social?.[req.username] || defaultSocialFor();
   const newOwnSocial = finalSocial[req.username] || defaultSocialFor();
+  const pushQueue = [];
   const notify = (username, notification) => {
     if (!username || username.toLowerCase() === req.username.toLowerCase()) return;
+    pushQueue.push({ username, notification });
     if (!finalSocial[username]) finalSocial[username] = defaultSocialFor();
     finalSocial[username].notifications = [notification, ...(finalSocial[username].notifications || [])].slice(0, 300);
   };
@@ -839,7 +923,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
       const post = finalPosts.find(p => String(p.id) === String(postIdStr));
       if (post && post.username !== req.username) notify(post.username, {
         name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-        text: `reacted ${emoji} to your post`, time: "Just now", unread: true, postId: post.id
+        text: `reacted ${emoji} to your post`, time: "Just now", createdAt: Date.now(), unread: true, postId: post.id
       });
     }
   }
@@ -854,7 +938,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
       const post = finalPosts.find(p => p.id === repost.postId);
       if (post && post.username !== req.username) notify(post.username, {
         name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-        text: "reposted your post", time: "Just now", unread: true, postId: post.id
+        text: "reposted your post", time: "Just now", createdAt: Date.now(), unread: true, postId: post.id
       });
     }
   }
@@ -865,7 +949,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
       for (const user of finalUsers) {
         if (user.username !== req.username) notify(user.username, {
           name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-          text: kind, time: "Just now", unread: true, type: "new_post", postId: post.id
+          text: kind, time: "Just now", createdAt: Date.now(), unread: true, type: "new_post", postId: post.id
         });
       }
     }
@@ -880,7 +964,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     const newLen = Array.isArray(newPost.commentsList) ? newPost.commentsList.length : 0;
     if (newLen > oldLen) notify(newPost.username, {
       name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-      text: "commented on your post", time: "Just now", unread: true, postId: newPost.id
+      text: "commented on your post", time: "Just now", createdAt: Date.now(), unread: true, postId: newPost.id
     });
   }
 
@@ -900,6 +984,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     });
   }
   finalState.rev = currentRev + 1;
+  deliverPushes(pushQueue); // fire-and-forget: never delays or fails the save
   res.json({
     ok: true,
     rev: finalState.rev,
@@ -907,6 +992,50 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     // saving client never keeps showing a stale count.
     posts: finalPosts.map(post => ({ id: post.id, reactions: post.reactions || {}, shares: post.shares || 0 }))
   });
+}));
+
+// ---------------------------------------------------------
+// PUSH ROUTES
+// ---------------------------------------------------------
+app.get("/api/push/config", requireAuth, (req, res) => {
+  res.json({ webPublicKey: WEB_PUSH_READY ? VAPID_PUBLIC_KEY : null });
+});
+
+app.post("/api/push/subscribe", requireAuth, ah(async (req, res) => {
+  const body = req.body || {};
+  let id, record;
+  if (body.type === "web") {
+    const s = body.subscription;
+    if (!s || typeof s.endpoint !== "string" || !/^https:\/\//.test(s.endpoint) || s.endpoint.length > 1500 ||
+        !s.keys || typeof s.keys.p256dh !== "string" || typeof s.keys.auth !== "string") {
+      return res.status(400).json({ error: "Invalid push subscription." });
+    }
+    id = pushId(s.endpoint);
+    record = { type: "web", username: req.user.username, subscription: { endpoint: s.endpoint, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth } }, createdAt: Date.now() };
+  } else if (body.type === "fcm") {
+    if (typeof body.token !== "string" || body.token.length < 20 || body.token.length > 4096) {
+      return res.status(400).json({ error: "Invalid device token." });
+    }
+    id = pushId(body.token);
+    record = { type: "fcm", username: req.user.username, token: body.token, createdAt: Date.now() };
+  } else {
+    return res.status(400).json({ error: "Unknown push type." });
+  }
+  // Saving under the same id re-assigns a shared device to whoever logged in last.
+  await store.savePushSub(id, record);
+  res.json({ ok: true });
+}));
+
+app.post("/api/push/unsubscribe", requireAuth, ah(async (req, res) => {
+  const key = (req.body && (req.body.endpoint || req.body.token)) || "";
+  if (!key || typeof key !== "string") return res.json({ ok: true });
+  const id = pushId(key);
+  const subs = await store.readPushSubs();
+  const sub = subs[id];
+  if (sub && String(sub.username).toLowerCase() === String(req.username).toLowerCase()) {
+    await store.deletePushSub(id);
+  }
+  res.json({ ok: true });
 }));
 
 // ---------------------------------------------------------
@@ -972,12 +1101,17 @@ app.post("/api/admin/users", requireAdmin, ah(async (req, res) => {
       avatar: (name || username).charAt(0).toUpperCase(),
       text: "joined the community \u2014 you\u2019re now connected!",
       time: "Just now",
+      createdAt: Date.now(),
       unread: true,
       type: "new_member"
     }, ...(state.social[other.username].notifications || [])].slice(0, 300);
   }
   await writeCredentials(credentials);
   await writeState(state);
+  deliverPushes(state.users.filter(u => u.username !== username).map(u => ({
+    username: u.username,
+    notification: { name: name || username, text: "joined the community" }
+  })));
   res.status(201).json({ ok: true, username });
 }));
 
