@@ -213,8 +213,12 @@ function saveData() {
 
 async function attemptSave(retriesLeft) {
   try {
+    const sentDeletes = Array.isArray(data.deletedPostIds) ? data.deletedPostIds.slice() : [];
     const result = await api("/api/state", { method: "POST", body: data });
     if (result && typeof result.rev === "number") data.rev = result.rev;
+    if (sentDeletes.length && Array.isArray(data.deletedPostIds)) {
+      data.deletedPostIds = data.deletedPostIds.filter(id => !sentDeletes.includes(id));
+    }
   } catch (error) {
     const freshState = error.status === 409 && error.payload && error.payload.state;
     if (freshState && typeof freshState.rev === "number" && retriesLeft > 0) {
@@ -1082,6 +1086,8 @@ function deletePost(id) {
   const index = data.posts.findIndex(p => p.id === id);
   if (index === -1) return;
   data.posts.splice(index, 1);
+  data.deletedPostIds = Array.isArray(data.deletedPostIds) ? data.deletedPostIds : [];
+  data.deletedPostIds.push(id);
   if (data.social) {
     Object.values(data.social).forEach(social => {
       if (Array.isArray(social.reposts)) {
@@ -1269,7 +1275,7 @@ if (postPhotoInput) {
       renderComposerPreview();
     } catch (error) {
       console.error(error);
-      showMessage("Couldn't add one of those photos.");
+      showMessage((error && error.message) || "Couldn't add one of those photos.");
     }
   });
 }
@@ -1301,7 +1307,7 @@ if (postVideoInput) {
       renderComposerPreview();
     } catch (error) {
       console.error(error);
-      showMessage("Couldn't add that video.");
+      showMessage((error && error.message) || "Couldn't add that video.");
     }
   });
 }
@@ -1946,7 +1952,7 @@ if (albumPhotoInput) {
       }
     } catch (error) {
       console.error(error);
-      showMessage("Couldn't add one of those photos.");
+      showMessage((error && error.message) || "Couldn't add one of those photos.");
     }
   });
 }
