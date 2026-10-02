@@ -214,6 +214,7 @@ function saveData() {
 async function attemptSave(retriesLeft) {
   try {
     const sentDeletes = Array.isArray(data.deletedPostIds) ? data.deletedPostIds.slice() : [];
+    const sentCommentDeletes = Array.isArray(data.deletedComments) ? data.deletedComments.slice() : [];
     const result = await api("/api/state", { method: "POST", body: data });
     if (result && typeof result.rev === "number") data.rev = result.rev;
     // Adopt the server's true reaction/share totals (only when no newer save is queued).
@@ -228,6 +229,9 @@ async function attemptSave(retriesLeft) {
         }
       });
       if (changed) refreshAfterSync();
+    }
+    if (sentCommentDeletes.length && Array.isArray(data.deletedComments)) {
+      data.deletedComments = data.deletedComments.filter(d => !sentCommentDeletes.some(s => s.postId === d.postId && s.commentId === d.commentId));
     }
     if (sentDeletes.length && Array.isArray(data.deletedPostIds)) {
       data.deletedPostIds = data.deletedPostIds.filter(id => !sentDeletes.includes(id));
@@ -1159,7 +1163,11 @@ function renderCommentsList() {
     container.innerHTML = `<p class="no-results">No comments yet. Be the first to comment!</p>`;
     return;
   }
-  container.innerHTML = list.map(comment => `
+  const me = session && session.username;
+  container.innerHTML = list.map(comment => {
+    const wroteIt = comment.username ? usernamesMatch(comment.username, me) : (currentUser() && comment.name === currentUser().name);
+    const canDelete = !!comment.id && (wroteIt || usernamesMatch(post.username, me) || (session && session.isAdmin));
+    return `
     <div class="comment-item">
       <div class="avatar">
         ${comment.avatarImage ? `<img src="${escapeHTML(comment.avatarImage)}" alt="${escapeHTML(comment.name)}">` : escapeHTML(comment.avatar || avatarLetter(comment.name))}
@@ -1169,9 +1177,27 @@ function renderCommentsList() {
         <span>${escapeHTML(comment.text)}</span>
         <small>${escapeHTML(comment.time)}</small>
       </div>
+      ${canDelete ? `<button type="button" class="comment-delete" aria-label="Delete comment" title="Delete comment" onclick="deleteComment(${post.id}, '${escapeHTML(comment.id)}')">&times;</button>` : ""}
     </div>
-  `).join("");
+  `;
+  }).join("");
   container.scrollTop = container.scrollHeight;
+}
+
+function deleteComment(postId, commentId) {
+  const post = data.posts.find(p => p.id === postId);
+  if (!post || !Array.isArray(post.commentsList)) return;
+  if (!confirm("Delete this comment?")) return;
+  post.commentsList = post.commentsList.filter(c => c.id !== commentId);
+  post.comments = post.commentsList.length;
+  data.deletedComments = Array.isArray(data.deletedComments) ? data.deletedComments : [];
+  data.deletedComments.push({ postId, commentId });
+  saveData();
+  renderCommentsList();
+  renderFeed();
+  const pv = document.getElementById("postViewModal");
+  if (pv && !pv.classList.contains("hidden")) refreshPostView();
+  showMessage("Comment deleted.");
 }
 
 /* =========================================================
@@ -1450,7 +1476,52 @@ function publishPost() {
    accept/decline, or remove flow anymore.)
 ========================================================= */
 
+// A member counts as "new" for 14 days after the admin creates their account.
+const NEW_MEMBER_DAYS = 14;
+function isNewMember(member) {
+  const joined = Number(member && member.joinedAt) || 0;
+  return joined > 0 && (Date.now() - joined) < NEW_MEMBER_DAYS * 24 * 60 * 60 * 1000;
+}
+
+// Everyone follows everyone automatically, so following/followers are simply
+// "every other member" — a brand-new account is instantly included both ways.
+function followCounts(username) {
+  const n = otherMembers(username).length;
+  return { following: n, followers: n };
+}
+
+function memberCardHTML(member, showNewBadge) {
+  return `
+    <div class="friend-card" onclick="openUserProfile('${escapeHTML(member.username)}')">
+      <div class="avatar">
+        ${member.avatarImage ? `<img src="${escapeHTML(member.avatarImage)}" alt="${escapeHTML(member.name)}">` : escapeHTML(member.avatar || avatarLetter(member.name))}
+      </div>
+      <div class="friend-info">
+        <strong>${escapeHTML(member.name)} ${showNewBadge && isNewMember(member) ? `<span class="new-badge">New</span>` : ""}</strong>
+        <small>${escapeHTML(member.username)}</small>
+        <small class="follow-line">Following &middot; Follows you</small>
+      </div>
+    </div>`;
+}
+
+function renderNewMembers() {
+  const box = document.getElementById("newMembersSection");
+  if (!box) return;
+  const current = currentUser();
+  const fresh = current ? otherMembers(current.username).filter(isNewMember)
+    .sort((a, b) => (b.joinedAt || 0) - (a.joinedAt || 0)) : [];
+  if (!fresh.length) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `
+    <h2 class="section-title">New in the community</h2>
+    <div class="friends-list">${fresh.map(m => memberCardHTML(m, true)).join("")}</div>
+    <h2 class="section-title">Everyone</h2>`;
+}
+
 function renderFriends(filter = "") {
+  renderNewMembers();
   const container = document.getElementById("friendsList");
   if (!container) return;
   const current = currentUser();
@@ -1473,17 +1544,7 @@ function renderFriends(filter = "") {
       : `<p class="no-results">No other members yet.</p>`;
     return;
   }
-  container.innerHTML = members.map(member => `
-    <div class="friend-card" onclick="openUserProfile('${escapeHTML(member.username)}')">
-      <div class="avatar">
-        ${member.avatarImage ? `<img src="${escapeHTML(member.avatarImage)}" alt="${escapeHTML(member.name)}">` : escapeHTML(member.avatar || avatarLetter(member.name))}
-      </div>
-      <div class="friend-info">
-        <strong>${escapeHTML(member.name)}</strong>
-        <small>${escapeHTML(member.username)}</small>
-      </div>
-    </div>
-  `).join("");
+  container.innerHTML = members.map(member => memberCardHTML(member, true)).join("");
 }
 
 function filterFriends() {
@@ -1567,6 +1628,7 @@ function renderUserProfileModal() {
     : "";
 
   const ownPosts = data.posts.filter(post => post.username && usernamesMatch(post.username, person.username));
+  const fc = followCounts(person.username);
 
   content.innerHTML = `
     <div class="profile-cover" ${coverStyle}></div>
@@ -1576,19 +1638,17 @@ function renderUserProfileModal() {
         <h2>${escapeHTML(person.name)}</h2>
         <p>${escapeHTML(person.username)}</p>
         <span class="privacy">Community Member</span>
+        ${isNewMember(person) ? `<span class="new-badge">New</span>` : ""}
       </div>
     </div>
     <p class="user-profile-bio">${escapeHTML(person.bio || "")}</p>
+    <div class="profile-stats mini">
+      <div><strong>${ownPosts.length}</strong><span>Posts</span></div>
+      <div><strong>${fc.following}</strong><span>Following</span></div>
+      <div><strong>${fc.followers}</strong><span>Followers</span></div>
+    </div>
     <div class="profile-grid">
-      ${
-        ownPosts.length
-          ? ownPosts.filter(p => p.image || (p.images && p.images.length)).slice(0, 9).map(p => `
-              <div onclick="closeModal('userProfileModal'); openPostView(${p.id})">
-                <img src="${escapeHTML(p.image || p.images[0])}" alt="Post">
-              </div>
-            `).join("")
-          : `<p class="no-results">No photos yet.</p>`
-      }
+      ${mediaTilesHTML(ownPosts, "closeModal('userProfileModal'); ")}
     </div>
   `;
 }
@@ -1718,6 +1778,19 @@ function switchProfileTab(tab) {
   document.getElementById("albumsGrid")?.classList.toggle("hidden", tab !== "posts");
 }
 
+// Photo AND video tiles for a profile's Posts grid (newest first, no 9-item cap).
+function mediaTilesHTML(posts, beforeOpen) {
+  const media = posts.filter(p => p.video || p.image || (p.images && p.images.length));
+  if (!media.length) return `<p class="no-results">No photos or videos yet.</p>`;
+  return media.map(p => {
+    const thumb = p.image || (p.images && p.images[0]);
+    const inner = thumb
+      ? `<img src="${escapeHTML(thumb)}" alt="Post">${p.video ? `<span class="video-badge">&#9654;</span>` : ""}`
+      : `<video src="${escapeHTML(p.video)}#t=0.1" preload="metadata" muted playsinline></video><span class="video-badge">&#9654;</span>`;
+    return `<div onclick="${beforeOpen}openPostView(${p.id})">${inner}</div>`;
+  }).join("");
+}
+
 function renderProfile() {
   const user = currentUser();
   if (!user) return;
@@ -1726,24 +1799,18 @@ function renderProfile() {
   const savedPosts = data.posts.filter(post => social.savedPostIds.includes(post.id));
   const postCount = document.getElementById("postCount");
   if (postCount) postCount.textContent = ownPosts.length;
-  const friendCount = document.getElementById("friendCount");
-  if (friendCount) friendCount.textContent = otherMembers(user.username).length;
+  const fc = followCounts(user.username);
+  const followingCount = document.getElementById("followingCount");
+  if (followingCount) followingCount.textContent = fc.following;
+  const followersCount = document.getElementById("followersCount");
+  if (followersCount) followersCount.textContent = fc.followers;
   const updateCount = document.getElementById("updateCount");
   if (updateCount) updateCount.textContent = savedPosts.length;
   const reactionsCount = Object.keys(social.myReactions || {}).length;
   const reactionCount = document.getElementById("reactionCount");
   if (reactionCount) reactionCount.textContent = reactionsCount;
-  const gridPosts = ownPosts.filter(post => post.image || (post.images && post.images.length));
   const grid = document.getElementById("profileGrid");
-  if (grid) {
-    grid.innerHTML = gridPosts.length
-      ? gridPosts.slice(0, 9).map(post => `
-        <div onclick="openPostView(${post.id})">
-          <img src="${escapeHTML(post.image || post.images[0])}" alt="Post">
-        </div>
-      `).join("")
-      : `<p class="no-results">No photos yet.</p>`;
-  }
+  if (grid) grid.innerHTML = mediaTilesHTML(ownPosts, "");
   renderReposts(social);
   renderAlbums();
   renderSidebarMembers();
