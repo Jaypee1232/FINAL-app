@@ -540,6 +540,9 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     : true; // brand-new post: ownership is enforced by forcing author fields below
 
   const base = currentPost ? { ...currentPost } : {};
+  // A new post MUST keep its id. Without it every reaction, comment, repost and
+  // delete (all keyed by post id) breaks, and Firestore silently drops the missing field.
+  if (!currentPost) base.id = incomingPost.id;
 
   if (isOwnerOrAdmin) {
     // New posts always get their author identity from the server's own
@@ -567,21 +570,26 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
   // whatever *new* comments were appended after it.
   const oldComments = (currentPost && Array.isArray(currentPost.commentsList)) ? currentPost.commentsList : [];
   const incomingComments = Array.isArray(incomingPost.commentsList) ? incomingPost.commentsList : [];
-  const oldPrefixMatches = oldComments.every((c, i) => sameJSON(c, incomingComments[i]));
-  let finalComments = oldComments;
-  if (oldPrefixMatches && incomingComments.length > oldComments.length) {
-    const appended = incomingComments.slice(oldComments.length).map(c => ({
-      // A comment's identity is always the CURRENT server-known profile of
-      // whoever is saving right now — never trusted from the client — so
-      // nobody can post a comment that looks like it came from someone else.
-      name: authorProfile.name,
-      avatar: authorProfile.avatar,
-      avatarImage: authorProfile.avatarImage || null,
-      text: clampString(c && c.text, MAX_COMMENT_LEN),
-      time: "Just now"
-    })).filter(c => c.text.trim().length > 0);
-    finalComments = oldComments.concat(appended);
+  // Comments the server already has are matched off one-for-one; whatever is left over in the
+  // sender's list is genuinely new. This still never lets anyone edit or remove a stored comment,
+  // but it no longer drops a new comment just because the sender's copy of the thread was stale.
+  const unmatchedOld = oldComments.slice();
+  const newIncoming = [];
+  for (const c of incomingComments) {
+    const at = unmatchedOld.findIndex(o => sameJSON(o, c));
+    if (at >= 0) unmatchedOld.splice(at, 1);
+    else newIncoming.push(c);
   }
+  const appended = newIncoming.map(c => ({
+    // A comment's identity is always the CURRENT server-known profile of whoever is saving —
+    // never trusted from the client — so nobody can post a comment as someone else.
+    name: authorProfile.name,
+    avatar: authorProfile.avatar,
+    avatarImage: authorProfile.avatarImage || null,
+    text: clampString(c && c.text, MAX_COMMENT_LEN),
+    time: "Just now"
+  })).filter(c => c.text.trim().length > 0).slice(0, 20);
+  const finalComments = oldComments.concat(appended);
   base.commentsList = finalComments;
   base.comments = finalComments.length;
 
@@ -1012,11 +1020,27 @@ app.get("*", (req, res) => {
 // Seed Firestore (first run only — a no-op every run after that), THEN
 // start listening. Firestore access is async, unlike the old fs.existsSync
 // seeding, so this can't happen at plain top-level code anymore.
+async function migratePostIds() {
+  const state = await readState();
+  const used = new Set(state.posts.filter(p => typeof p.id === "number").map(p => p.id));
+  let seq = Date.now() * 1000, fixed = 0;
+  state.posts.forEach(p => {
+    if (typeof p.id !== "number") {
+      do { seq++; } while (used.has(seq));
+      p.id = seq; used.add(seq); fixed++;
+    }
+  });
+  if (fixed) {
+    await writeState(state);
+    console.log(`[migrate] Gave ${fixed} existing post(s) a missing id.`);
+  }
+}
+
 store.ensureSeeded(defaultState(), (() => {
   const credentials = {};
   SEED_MEMBERS.forEach(m => { credentials[m.username.toLowerCase()] = bcrypt.hashSync(m.password, 10); });
   return credentials;
-})()).then(() => {
+})()).then(() => migratePostIds()).then(() => {
   app.listen(PORT, () => {
     console.log(`Nea's Boarding Horse server running on http://localhost:${PORT}`);
   });
