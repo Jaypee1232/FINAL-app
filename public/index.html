@@ -234,6 +234,16 @@
           <div class="admin-card">
             <div class="admin-card-heading">
               <div>
+                <h2>Birthdays 🎂</h2>
+                <p>Private — only admins can see these. Members add their own in Edit Profile.</p>
+              </div>
+            </div>
+            <div id="adminBirthdaysList" class="admin-users-list"></div>
+          </div>
+
+          <div class="admin-card">
+            <div class="admin-card-heading">
+              <div>
                 <h2>All Posted Media</h2>
                 <p>View photos and videos posted by every account.</p>
               </div>
@@ -416,6 +426,22 @@
         Bio
         <textarea id="editBio"></textarea>
       </label>
+
+      <fieldset class="birthday-field">
+        <legend>Birthday <small>🔒 Only the admin can see this</small></legend>
+        <div class="birthday-row">
+          <select id="editBirthMonth" aria-label="Birth month">
+            <option value="">Month</option>
+            <option value="1">January</option><option value="2">February</option><option value="3">March</option>
+            <option value="4">April</option><option value="5">May</option><option value="6">June</option>
+            <option value="7">July</option><option value="8">August</option><option value="9">September</option>
+            <option value="10">October</option><option value="11">November</option><option value="12">December</option>
+          </select>
+          <input id="editBirthDay" type="number" min="1" max="31" placeholder="Day" aria-label="Birth day">
+          <input id="editBirthYear" type="number" min="1900" placeholder="Year (optional)" aria-label="Birth year (optional)">
+        </div>
+        <button type="button" class="soft-button small-admin-btn" onclick="clearMyBirthday()">Remove my birthday</button>
+      </fieldset>
     </div>
   </div>
 
