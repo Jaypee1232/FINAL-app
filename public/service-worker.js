@@ -11,7 +11,7 @@
      members get the new version instead of a stuck old one.
 ========================================================= */
 
-const CACHE_NAME = "nbh-shell-v3";
+const CACHE_NAME = "nbh-shell-v4";
 const SHELL_FILES = [
   "/",
   "/index.html",
@@ -63,5 +63,42 @@ self.addEventListener("fetch", (event) => {
       .catch(() =>
         caches.match(event.request).then((cached) => cached || caches.match("/index.html"))
       )
+  );
+});
+
+
+/* ---------- Push notifications (browser / installed web app) ---------- */
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch (e) { payload = { body: event.data ? event.data.text() : "" }; }
+  const title = payload.title || "Nea's Boarding Horse";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      // If the app is open and visible the member already sees the update live.
+      if (list.some((c) => c.visibilityState === "visible")) return;
+      return self.registration.showNotification(title, {
+        body: payload.body || "",
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+        tag: payload.tag || "nbh",
+        data: { postId: payload.postId == null ? null : payload.postId }
+      });
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const postId = event.notification.data ? event.notification.data.postId : null;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if ("focus" in c) {
+          c.postMessage({ type: "open-post", postId });
+          return c.focus();
+        }
+      }
+      return self.clients.openWindow(postId != null ? "/?post=" + postId : "/");
+    })
   );
 });
