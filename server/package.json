@@ -4,7 +4,8 @@
   "description": "Backend for Nea's Boarding Horse private community site",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "generate-vapid": "web-push generate-vapid-keys"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.2",
@@ -16,7 +17,8 @@
     "dotenv": "^18.0.4",
     "express": "^4.19.2",
     "firebase-admin": "^12.7.0",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "web-push": "^3.6.7"
   },
   "engines": {
     "node": ">=18"
