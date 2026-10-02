@@ -34,6 +34,7 @@ const ICON_PATHS = {
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
   video: '<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
   poll: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
   moreHorizontal: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
   messageCircle: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
@@ -172,6 +173,8 @@ let activePostId = null;
 let activeAlbumId = null;
 let composerImages = [];
 let composerVideo = null;
+let composerMusic = null;
+let previewKey = null;
 let activeProfileTab = "posts";
 let viewingUsername = null;
 let adminOverview = { users: [], posts: [] };
@@ -809,6 +812,7 @@ async function logout(options = {}) {
   activeAlbumId = null;
   composerImages = [];
   composerVideo = null;
+  composerMusic = null;
   viewingUsername = null;
 
   document.getElementById("app")?.classList.add("hidden");
@@ -1031,6 +1035,7 @@ function postCardHTML(post, options = {}) {
       </div>
       <div class="post-text">${escapeHTML(post.text)}</div>
       ${mediaHTML}
+      ${post.music && post.music.previewUrl ? musicBarHTML(post.music, false) : ""}
       <div class="reaction-bar">${reactionButtons}</div>
       <div class="post-actions">
         <button onclick="openComments(${post.id})"><span class="icon">${iconSVG("messageCircle")}</span> ${post.comments || 0}</button>
@@ -1369,7 +1374,10 @@ function closeComposer() {
   if (postText) postText.value = "";
   composerImages = [];
   composerVideo = null;
+  composerMusic = null;
+  stopPreview();
   renderComposerPreview();
+  renderMusicPreview();
 }
 
 function addPhoto() {
@@ -1399,12 +1407,23 @@ if (postPhotoInput) {
       showMessage("Please choose image files.");
       return;
     }
-    showMessage(imageFiles.length > 1 ? "Adding photos…" : "Adding photo…");
     try {
-      const compressed = await Promise.all(
-        imageFiles.map(file => compressImageFile(file, 1600, 0.82))
-      );
-      const urls = await Promise.all(compressed.map(dataUrl => uploadMedia(dataUrl, "image")));
+      // Each photo opens in the editor first; uploads run in the background while you edit the next one.
+      const uploads = [];
+      for (const file of imageFiles) {
+        let edited;
+        try {
+          edited = await openPhotoEditor(file);
+        } catch (editorError) {
+          console.warn("Photo editor unavailable, using the original.", editorError);
+          edited = await compressImageFile(file, 1600, 0.82);
+        }
+        if (!edited) continue; // cancelled this photo
+        showMessage("Adding photo…");
+        uploads.push(uploadMedia(edited, "image"));
+      }
+      if (!uploads.length) return;
+      const urls = await Promise.all(uploads);
       composerImages.push(...urls);
       composerVideo = null;
       renderComposerPreview();
@@ -1534,6 +1553,7 @@ function publishPost() {
   } else if (composerImages.length === 1) {
     newPost.image = composerImages[0];
   }
+  if (composerMusic) newPost.music = { ...composerMusic };
   data.posts.unshift(newPost);
   const saved = saveData();
   if (!saved) {
@@ -1545,6 +1565,7 @@ function publishPost() {
   }
   composerImages = [];
   composerVideo = null;
+  composerMusic = null;
   renderComposerPreview();
   closeComposer();
   renderEverything();
@@ -1893,8 +1914,22 @@ function renderNotifications() {
 
 function renderNotificationPermissionBanner() {
   if (isNativeApp()) return "";
-  if (typeof Notification === "undefined") return "";
-  if (Notification.permission === "granted" || Notification.permission === "denied") return "";
+  if (typeof Notification === "undefined") {
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    return `
+    <div class="notification-permission-banner">
+      <span>${isIOS
+        ? "Notifications aren't available in this view. On iPhone: tap Share, then Add to Home Screen, then open the app from the new Home Screen icon (not Safari)."
+        : "This browser doesn't support notifications. Try Chrome, or install this site as an app."}</span>
+    </div>`;
+  }
+  if (Notification.permission === "denied") {
+    return `
+    <div class="notification-permission-banner">
+      <span>Notifications are blocked for this app. Open your phone's Settings, then Notifications, find this app, and turn on Allow Notifications.</span>
+    </div>`;
+  }
+  if (Notification.permission === "granted") return "";
   return `
     <div class="notification-permission-banner">
       <span>Turn on alerts to get notifications the moment something happens, even in another tab.</span>
@@ -2557,6 +2592,347 @@ async function startup() {
 }
 
 startup();
+
+/* =========================================================
+   PHOTO EDITOR  (crop / rotate / filters / adjust)
+   Opens after choosing a photo in the composer. Everything runs
+   in the phone's browser; only the finished JPEG is uploaded.
+========================================================= */
+
+const PHOTO_PRESETS = {
+  Normal: {},
+  Vivid: { sat: 35, con: 15 },
+  Warm: { warm: 28, sat: 10 },
+  Cool: { warm: -28, bri: 3 },
+  "B&W": { gray: 1, con: 12 },
+  Sepia: { sepia: 1 },
+  Fade: { fade: 0.18, con: -10, sat: -15 },
+  Drama: { con: 35, sat: -10, bri: -8 }
+};
+const PHOTO_ASPECTS = { Original: 0, "1:1": 1, "4:5": 0.8, "16:9": 16 / 9 };
+
+function escAttr(value) {
+  return String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function photoCropGeom(st, src) {
+  const rotated = st.rot % 2 === 1;
+  const rw = rotated ? src.height : src.width;
+  const rh = rotated ? src.width : src.height;
+  const ratio = st.aspect || rw / rh;
+  let cw, ch;
+  if (rw / rh > ratio) { ch = rh; cw = rh * ratio; } else { cw = rw; ch = rw / ratio; }
+  cw /= st.zoom;
+  ch /= st.zoom;
+  return { rw, rh, cw, ch, maxX: (rw - cw) / 2, maxY: (rh - ch) / 2 };
+}
+
+function applyPhotoLook(ctx, w, h, st) {
+  const p = PHOTO_PRESETS[st.preset] || {};
+  const bri = (st.bri + (p.bri || 0)) * 2.55;
+  const conV = Math.max(-200, Math.min(200, (st.con + (p.con || 0)) * 2.55));
+  const cf = (259 * (conV + 255)) / (255 * (259 - conV));
+  const sat = 1 + (st.sat + (p.sat || 0)) / 100;
+  const warm = p.warm || 0, gray = p.gray || 0, sepia = p.sepia || 0, fade = p.fade || 0;
+  if (!bri && !conV && sat === 1 && !warm && !gray && !sepia && !fade) return;
+  const image = ctx.getImageData(0, 0, w, h);
+  const d = image.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let r = d[i] + bri, g = d[i + 1] + bri, b = d[i + 2] + bri;
+    r = cf * (r - 128) + 128; g = cf * (g - 128) + 128; b = cf * (b - 128) + 128;
+    const l = 0.299 * r + 0.587 * g + 0.114 * b;
+    r = l + (r - l) * sat; g = l + (g - l) * sat; b = l + (b - l) * sat;
+    if (gray) { r += (l - r) * gray; g += (l - g) * gray; b += (l - b) * gray; }
+    if (sepia) {
+      const sr = 0.393 * r + 0.769 * g + 0.189 * b;
+      const sg = 0.349 * r + 0.686 * g + 0.168 * b;
+      const sb = 0.272 * r + 0.534 * g + 0.131 * b;
+      r += (sr - r) * sepia; g += (sg - g) * sepia; b += (sb - b) * sepia;
+    }
+    r += warm; b -= warm;
+    if (fade) { r = r * (1 - fade) + 150 * fade; g = g * (1 - fade) + 150 * fade; b = b * (1 - fade) + 150 * fade; }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; // Uint8ClampedArray clamps for us
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+function renderEditedPhoto(st, src, maxSide) {
+  const g = photoCropGeom(st, src);
+  const cx = st.px * g.maxX, cy = st.py * g.maxY; // crop centre offset from image centre
+  const k = Math.min(1, maxSide / Math.max(g.cw, g.ch));
+  const ow = Math.max(1, Math.round(g.cw * k));
+  const oh = Math.max(1, Math.round(g.ch * k));
+  const out = document.createElement("canvas");
+  out.width = ow;
+  out.height = oh;
+  const ctx = out.getContext("2d");
+  ctx.save();
+  ctx.translate(ow / 2, oh / 2);
+  ctx.scale(k, k);
+  ctx.translate(-cx, -cy);
+  ctx.rotate(st.rot * Math.PI / 2);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  ctx.restore();
+  applyPhotoLook(ctx, ow, oh, st);
+  return out;
+}
+
+// Resolves with an edited JPEG data URL, or null if the member cancelled this photo.
+async function openPhotoEditor(file) {
+  const rawUrl = await readFileAsDataURL(file);
+  const img = await new Promise((ok, bad) => {
+    const i = new Image();
+    i.onload = () => ok(i);
+    i.onerror = () => bad(new Error("Could not read that image."));
+    i.src = rawUrl;
+  });
+  const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const src = document.createElement("canvas");
+  src.width = Math.max(1, Math.round(img.width * scale));
+  src.height = Math.max(1, Math.round(img.height * scale));
+  src.getContext("2d").drawImage(img, 0, 0, src.width, src.height);
+
+  const st = { rot: 0, aspect: 0, zoom: 1, px: 0, py: 0, preset: "Normal", bri: 0, con: 0, sat: 0 };
+
+  return new Promise(resolve => {
+    const ov = document.createElement("div");
+    ov.className = "pe-overlay";
+    ov.innerHTML = `
+      <div class="pe-top">
+        <button type="button" data-a="cancel">Cancel</button>
+        <strong>Edit photo</strong>
+        <button type="button" class="pe-done" data-a="done">Done</button>
+      </div>
+      <div class="pe-stage"><canvas class="pe-canvas"></canvas></div>
+      <div class="pe-tabs">
+        <button type="button" data-tab="filters" class="active">Filters</button>
+        <button type="button" data-tab="adjust">Adjust</button>
+        <button type="button" data-tab="crop">Crop</button>
+      </div>
+      <div class="pe-panel" data-panel="filters">
+        ${Object.keys(PHOTO_PRESETS).map(n => `<button type="button" class="pe-chip ${n === "Normal" ? "active" : ""}" data-preset="${escAttr(n)}">${escapeHTML(n)}</button>`).join("")}
+      </div>
+      <div class="pe-panel pe-hide" data-panel="adjust">
+        <label>Brightness <input type="range" min="-60" max="60" value="0" data-adj="bri"></label>
+        <label>Contrast <input type="range" min="-60" max="60" value="0" data-adj="con"></label>
+        <label>Color <input type="range" min="-100" max="100" value="0" data-adj="sat"></label>
+      </div>
+      <div class="pe-panel pe-hide" data-panel="crop">
+        ${Object.keys(PHOTO_ASPECTS).map(n => `<button type="button" class="pe-chip ${n === "Original" ? "active" : ""}" data-aspect="${escAttr(n)}">${escapeHTML(n)}</button>`).join("")}
+        <button type="button" class="pe-chip" data-a="rotate">⟳ Rotate</button>
+        <label class="pe-zoom">Zoom <input type="range" min="1" max="3" step="0.05" value="1" data-adj="zoom"></label>
+        <small class="pe-hint">Drag the photo to move it.</small>
+      </div>`;
+    document.body.appendChild(ov);
+
+    const canvas = ov.querySelector(".pe-canvas");
+    let queued = false;
+    const draw = () => {
+      queued = false;
+      const out = renderEditedPhoto(st, src, 720);
+      canvas.width = out.width;
+      canvas.height = out.height;
+      canvas.getContext("2d").drawImage(out, 0, 0);
+    };
+    const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
+    const close = value => { ov.remove(); resolve(value); };
+    schedule();
+
+    ov.addEventListener("click", event => {
+      const t = event.target.closest("button");
+      if (!t) return;
+      if (t.dataset.a === "cancel") return close(null);
+      if (t.dataset.a === "done") {
+        try {
+          close(renderEditedPhoto(st, src, 1600).toDataURL("image/jpeg", 0.85));
+        } catch (err) {
+          console.error(err);
+          showMessage("Couldn't save that edit.");
+        }
+        return;
+      }
+      if (t.dataset.a === "rotate") { st.rot = (st.rot + 1) % 4; st.px = 0; st.py = 0; return schedule(); }
+      if (t.dataset.tab) {
+        ov.querySelectorAll(".pe-tabs button").forEach(b => b.classList.toggle("active", b === t));
+        ov.querySelectorAll(".pe-panel").forEach(p => p.classList.toggle("pe-hide", p.dataset.panel !== t.dataset.tab));
+        return;
+      }
+      if (t.dataset.preset) {
+        st.preset = t.dataset.preset;
+        ov.querySelectorAll("[data-preset]").forEach(b => b.classList.toggle("active", b === t));
+        return schedule();
+      }
+      if (t.dataset.aspect) {
+        st.aspect = PHOTO_ASPECTS[t.dataset.aspect] || 0;
+        st.px = 0; st.py = 0;
+        ov.querySelectorAll("[data-aspect]").forEach(b => b.classList.toggle("active", b === t));
+        schedule();
+      }
+    });
+
+    ov.addEventListener("input", event => {
+      const key = event.target && event.target.dataset ? event.target.dataset.adj : null;
+      if (!key) return;
+      st[key] = Number(event.target.value);
+      if (key === "zoom") { st.px = Math.max(-1, Math.min(1, st.px)); st.py = Math.max(-1, Math.min(1, st.py)); }
+      schedule();
+    });
+
+    let drag = null;
+    canvas.addEventListener("pointerdown", e => {
+      drag = { x: e.clientX, y: e.clientY, px: st.px, py: st.py };
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    });
+    canvas.addEventListener("pointermove", e => {
+      if (!drag) return;
+      const g = photoCropGeom(st, src);
+      const unit = g.cw / Math.max(1, canvas.clientWidth); // source pixels per screen pixel
+      if (g.maxX > 0) st.px = Math.max(-1, Math.min(1, drag.px - ((e.clientX - drag.x) * unit) / g.maxX));
+      if (g.maxY > 0) st.py = Math.max(-1, Math.min(1, drag.py - ((e.clientY - drag.y) * unit) / g.maxY));
+      schedule();
+    });
+    const endDrag = () => { drag = null; };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+  });
+}
+
+/* =========================================================
+   MUSIC  (30-second previews found through the server's /api/music/search)
+========================================================= */
+
+let previewAudio = null;
+
+function stopPreview() {
+  if (previewAudio) previewAudio.pause();
+  previewKey = null;
+  document.querySelectorAll(".pm-play").forEach(b => { b.textContent = "▶"; });
+}
+
+function togglePreview(btn, url, start) {
+  if (!url) return;
+  if (previewKey === url) { stopPreview(); return; }
+  stopPreview();
+  if (!previewAudio) previewAudio = new Audio();
+  previewAudio.src = url;
+  previewAudio.onended = stopPreview;
+  previewAudio.onloadedmetadata = () => { if (start) previewAudio.currentTime = start; };
+  previewKey = url;
+  btn.textContent = "❚❚";
+  previewAudio.play().catch(() => {
+    stopPreview();
+    showMessage("Couldn't play that clip.");
+  });
+}
+
+function togglePostMusic(btn) {
+  const box = btn.closest(".post-music");
+  if (!box) return;
+  togglePreview(btn, box.dataset.preview, Number(box.dataset.start) || 0);
+}
+
+function musicBarHTML(music, removable) {
+  const art = music.artwork
+    ? `<img src="${escAttr(music.artwork)}" alt="">`
+    : `<span class="pm-art-empty">♪</span>`;
+  const playing = previewKey === music.previewUrl;
+  return `
+    <div class="post-music" data-preview="${escAttr(music.previewUrl)}" data-start="${Number(music.start) || 0}">
+      ${art}
+      <div class="pm-info"><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
+      <button type="button" class="pm-play" onclick="togglePostMusic(this)" aria-label="Play music">${playing ? "❚❚" : "▶"}</button>
+      ${removable ? `<button type="button" class="pm-x" onclick="removeComposerMusic()" aria-label="Remove music">×</button>` : ""}
+    </div>`;
+}
+
+function renderMusicPreview() {
+  const el = document.getElementById("musicPreview");
+  if (!el) return;
+  if (!composerMusic) {
+    el.innerHTML = "";
+    el.classList.add("hidden");
+    return;
+  }
+  el.innerHTML = musicBarHTML(composerMusic, true);
+  el.classList.remove("hidden");
+}
+
+function removeComposerMusic() {
+  composerMusic = null;
+  stopPreview();
+  renderMusicPreview();
+}
+
+function addMusic() {
+  const ov = document.createElement("div");
+  ov.className = "mp-overlay";
+  ov.innerHTML = `
+    <div class="mp-box">
+      <div class="pe-top">
+        <button type="button" data-a="close" aria-label="Close">×</button>
+        <strong>Add music</strong>
+        <span></span>
+      </div>
+      <input class="mp-search" type="search" placeholder="Search songs or artists" autocomplete="off" autocapitalize="off">
+      <div class="mp-list"><p class="mp-empty">Type a song or artist to search.</p></div>
+    </div>`;
+  document.body.appendChild(ov);
+
+  const input = ov.querySelector(".mp-search");
+  const list = ov.querySelector(".mp-list");
+  let results = [];
+  let timer = null;
+  let token = 0;
+
+  const close = () => { stopPreview(); ov.remove(); };
+
+  const show = html => { list.innerHTML = html; };
+
+  async function search() {
+    const q = input.value.trim();
+    if (q.length < 2) { show(`<p class="mp-empty">Type a song or artist to search.</p>`); return; }
+    const mine = ++token;
+    show(`<p class="mp-empty">Searching…</p>`);
+    try {
+      const res = await api("/api/music/search?q=" + encodeURIComponent(q));
+      if (mine !== token) return;
+      results = (res && res.results) || [];
+      if (!results.length) { show(`<p class="mp-empty">No songs found. Try another search.</p>`); return; }
+      show(results.map((t, i) => `
+        <div class="mp-row" data-i="${i}">
+          ${t.artwork ? `<img src="${escAttr(t.artwork)}" alt="">` : `<span class="pm-art-empty">♪</span>`}
+          <div class="pm-info"><strong>${escapeHTML(t.title)}</strong><small>${escapeHTML(t.artist)}</small></div>
+          <button type="button" class="pm-play" data-play="${i}" aria-label="Preview">▶</button>
+          <button type="button" class="mp-use" data-use="${i}">Use</button>
+        </div>`).join(""));
+    } catch (err) {
+      if (mine !== token) return;
+      show(`<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't search right now.")}</p>`);
+    }
+  }
+
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 400); });
+
+  ov.addEventListener("click", event => {
+    const t = event.target.closest("button");
+    if (!t) return;
+    if (t.dataset.a === "close") return close();
+    if (t.dataset.play != null) {
+      const track = results[Number(t.dataset.play)];
+      if (track) togglePreview(t, track.previewUrl, 0);
+      return;
+    }
+    if (t.dataset.use != null) {
+      const track = results[Number(t.dataset.use)];
+      if (!track) return;
+      composerMusic = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: 0 };
+      close();
+      renderMusicPreview();
+    }
+  });
+
+  setTimeout(() => input.focus(), 50);
+}
 
 /* =========================================================
    PWA: SERVICE WORKER REGISTRATION
