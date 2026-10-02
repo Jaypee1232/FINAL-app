@@ -216,6 +216,19 @@ async function attemptSave(retriesLeft) {
     const sentDeletes = Array.isArray(data.deletedPostIds) ? data.deletedPostIds.slice() : [];
     const result = await api("/api/state", { method: "POST", body: data });
     if (result && typeof result.rev === "number") data.rev = result.rev;
+    // Adopt the server's true reaction/share totals (only when no newer save is queued).
+    if (result && Array.isArray(result.posts) && savesInFlight === 1) {
+      let changed = false;
+      result.posts.forEach(sp => {
+        const lp = data.posts.find(p => p.id === sp.id);
+        if (lp && (JSON.stringify(lp.reactions || {}) !== JSON.stringify(sp.reactions) || (lp.shares || 0) !== sp.shares)) {
+          lp.reactions = sp.reactions;
+          lp.shares = sp.shares;
+          changed = true;
+        }
+      });
+      if (changed) refreshAfterSync();
+    }
     if (sentDeletes.length && Array.isArray(data.deletedPostIds)) {
       data.deletedPostIds = data.deletedPostIds.filter(id => !sentDeletes.includes(id));
     }
@@ -256,7 +269,20 @@ async function attemptSave(retriesLeft) {
 let pollTimer = null;
 
 function anyModalOpen() {
-  return !!document.querySelector(".modal:not(.hidden)");
+  // Only pause live sync while the member is typing/editing. Viewing a photo or
+  // reading comments must keep updating so reactions stay in sync.
+  return ["composerModal", "editModal", "changePasswordModal", "albumModal"].some(id => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains("hidden");
+  });
+}
+
+function refreshAfterSync() {
+  renderFeed();
+  const pv = document.getElementById("postViewModal");
+  if (pv && !pv.classList.contains("hidden")) refreshPostView();
+  const cm = document.getElementById("commentsModal");
+  if (cm && !cm.classList.contains("hidden") && typeof renderCommentsList === "function") renderCommentsList();
 }
 
 async function pollState() {
@@ -267,6 +293,7 @@ async function pollState() {
     if (JSON.stringify(fresh) === JSON.stringify(data)) return;
     data = fresh;
     renderEverything();
+    refreshAfterSync();
   } catch (error) {
     // Session probably expired — quietly stop polling; the next
     // user action will surface a proper "please log in again".
