@@ -472,7 +472,8 @@ app.post("/api/upload", requireAuth, async (req, res) => {
     res.json({ url: result.secure_url });
   } catch (error) {
     console.error("[cloudinary upload error]", error);
-    res.status(502).json({ error: "Upload to media storage failed. Please try again." });
+    const reason = String((error && (error.message || (error.error && error.error.message))) || "unknown error").slice(0, 200);
+    res.status(502).json({ error: "Upload to media storage failed: " + reason });
   }
 });
 
