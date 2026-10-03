@@ -610,7 +610,7 @@ function sameJSON(a, b) {
 // Looser identity for a comment, used only to match the sender's copy against the
 // server's copy (ids / usernames may be missing on a stale client copy).
 function commentKey(c) {
-  return [c && c.name, c && c.text, c && c.time].map(v => String(v == null ? "" : v)).join("|");
+  return [c && c.name, c && c.text, c && c.time, c && c.image].map(v => String(v == null ? "" : v)).join("|");
 }
 
 function newCommentId() {
@@ -717,9 +717,11 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     avatar: authorProfile.avatar,
     avatarImage: authorProfile.avatarImage || null,
     text: clampString(c && c.text, MAX_COMMENT_LEN),
+    // Optional photo/GIF: only accept links that came from our own upload endpoint.
+    image: (c && typeof c.image === "string" && /^(https:\/\/|\/uploads\/)/.test(c.image)) ? clampString(c.image, 2000) : null,
     time: "Just now",
     createdAt: Date.now()
-  })).filter(c => c.text.trim().length > 0).slice(0, 20);
+  })).filter(c => c.text.trim().length > 0 || c.image).slice(0, 20);
   const finalComments = oldComments.concat(appended);
   base.commentsList = finalComments;
   base.comments = finalComments.length;
@@ -1319,6 +1321,22 @@ app.delete("/api/admin/posts/:postId", requireAdmin, ah(async (req, res) => {
   if (state.posts.length === before) return res.status(404).json({ error: "Post not found." });
   await writeState(state);
   res.json({ ok: true });
+}));
+
+// Like / unlike a comment. Stored as a list of usernames on the comment itself.
+app.post("/api/posts/:postId/comments/:commentId/like", requireAuth, ah(async (req, res) => {
+  const postId = String(req.params.postId);
+  const commentId = String(req.params.commentId);
+  const state = await readState();
+  const post = state.posts.find(p => String(p.id) === postId);
+  const comment = post && Array.isArray(post.commentsList) ? post.commentsList.find(c => c && c.id === commentId) : null;
+  if (!comment) return res.status(404).json({ error: "Comment not found." });
+  const likes = Array.isArray(comment.likes) ? comment.likes.filter(u => typeof u === "string") : [];
+  const at = likes.indexOf(req.username);
+  if (at >= 0) likes.splice(at, 1); else likes.push(req.username);
+  comment.likes = likes;
+  await writeState(state);
+  res.json({ ok: true, likes });
 }));
 
 // ---------------------------------------------------------
