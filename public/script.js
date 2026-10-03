@@ -298,6 +298,15 @@ async function pollState() {
     const fresh = await api("/api/state");
     if (savesInFlight > 0) return; // a save started while we were fetching; don't overwrite it
     if (JSON.stringify(fresh) === JSON.stringify(data)) return;
+    // If someone else posted while you're scrolled down reading, don't shove the
+    // feed around under your thumb. Show a "N new posts" button instead.
+    const knownIds = new Set(data.posts.map(p => p.id));
+    const newCount = fresh.posts.filter(p => !knownIds.has(p.id) && !(p.username && usernamesMatch(p.username, session.username))).length;
+    if (newCount > 0 && window.scrollY > 200) {
+      showNewPostsButton(newCount);
+      return;
+    }
+    hideNewPostsButton();
     data = fresh;
     renderEverything();
     refreshAfterSync();
@@ -1240,7 +1249,7 @@ function openComments(id) {
   input?.focus();
 }
 
-function renderCommentsList() {
+function renderCommentsList(keepScroll) {
   const post = data.posts.find(p => p.id === activePostId);
   const container = document.getElementById("commentsList");
   if (!post || !container) return;
@@ -1253,6 +1262,11 @@ function renderCommentsList() {
   container.innerHTML = list.map(comment => {
     const wroteIt = comment.username ? usernamesMatch(comment.username, me) : (currentUser() && comment.name === currentUser().name);
     const canDelete = !!comment.id && (wroteIt || usernamesMatch(post.username, me) || (session && session.isAdmin));
+    const likes = Array.isArray(comment.likes) ? comment.likes : [];
+    const iLiked = !!me && likes.some(u => usernamesMatch(u, me));
+    const likeBtn = comment.id
+      ? `<button type="button" class="comment-like ${iLiked ? "liked" : ""}" onclick="toggleCommentLike(${post.id}, '${escapeHTML(comment.id)}')" aria-label="${iLiked ? "Unlike" : "Like"} comment">${iLiked ? "\u2764\uFE0F" : "\uD83E\uDD0D"}${likes.length ? " " + likes.length : ""}</button>`
+      : "";
     return `
     <div class="comment-item">
       <div class="avatar">
@@ -1260,14 +1274,16 @@ function renderCommentsList() {
       </div>
       <div class="comment-body">
         <strong>${escapeHTML(comment.name)}</strong>
-        <span>${escapeHTML(comment.text)}</span>
+        ${comment.text ? `<span>${escapeHTML(comment.text)}</span>` : ""}
+        ${comment.image ? `<img class="comment-image" src="${escapeHTML(comment.image)}" alt="Photo in comment" loading="lazy">` : ""}
         <small title="${escapeHTML(fullStamp(comment.createdAt))}">${escapeHTML(formatStamp(comment.createdAt, comment.time))}</small>
+        ${likeBtn}
       </div>
       ${canDelete ? `<button type="button" class="comment-delete" aria-label="Delete comment" title="Delete comment" onclick="deleteComment(${post.id}, '${escapeHTML(comment.id)}')">&times;</button>` : ""}
     </div>
   `;
   }).join("");
-  container.scrollTop = container.scrollHeight;
+  if (!keepScroll) container.scrollTop = container.scrollHeight;
 }
 
 function deleteComment(postId, commentId) {
@@ -1290,32 +1306,78 @@ function deleteComment(postId, commentId) {
    COMMENT FORM
 ========================================================= */
 
+let commentPhotoDataUrl = null;
+
+function showCommentPhotoPreview() {
+  const box = document.getElementById("commentPhotoPreview");
+  if (!box) return;
+  if (!commentPhotoDataUrl) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  box.innerHTML = `<img src="${commentPhotoDataUrl}" alt="Selected photo"><button type="button" aria-label="Remove photo" onclick="clearCommentPhoto()">&times;</button>`;
+  box.classList.remove("hidden");
+}
+
+function clearCommentPhoto() {
+  commentPhotoDataUrl = null;
+  showCommentPhotoPreview();
+}
+
+const commentPhotoInput = document.getElementById("commentPhotoInput");
+if (commentPhotoInput) {
+  commentPhotoInput.addEventListener("change", () => {
+    const file = commentPhotoInput.files && commentPhotoInput.files[0];
+    commentPhotoInput.value = "";
+    if (!file) return;
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { showMessage("Please choose a PNG, JPG, GIF or WebP image."); return; }
+    if (file.size > 8 * 1024 * 1024) { showMessage("That image is too large (max 8MB)."); return; }
+    const reader = new FileReader();
+    reader.onload = () => { commentPhotoDataUrl = reader.result; showCommentPhotoPreview(); };
+    reader.readAsDataURL(file);
+  });
+}
+
 const commentForm = document.getElementById("commentForm");
 if (commentForm) {
-  commentForm.addEventListener("submit", function (event) {
+  commentForm.addEventListener("submit", async function (event) {
     event.preventDefault();
     const input = document.getElementById("commentInput");
     const text = input.value.trim();
-    if (!text || !activePostId) return;
-    const post = data.posts.find(p => p.id === activePostId);
-    if (!post) return;
+    const postId = activePostId;
+    if ((!text && !commentPhotoDataUrl) || !postId) return;
     const user = currentUser();
     if (!user) return;
+    const submitBtn = commentForm.querySelector('button[type="submit"]');
 
+    let imageUrl = null;
+    if (commentPhotoDataUrl) {
+      try {
+        if (submitBtn) submitBtn.disabled = true;
+        imageUrl = await uploadMedia(commentPhotoDataUrl, "image");
+      } catch (error) {
+        showMessage((error && error.message) || "Couldn't upload that photo.");
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+      if (submitBtn) submitBtn.disabled = false;
+    }
+
+    // Look the post up again: the feed may have refreshed while the upload ran.
+    const post = data.posts.find(p => p.id === postId);
+    if (!post) return;
     if (!post.commentsList) post.commentsList = [];
     post.commentsList.push({
       name: user.name,
       avatar: user.avatar,
       avatarImage: user.avatarImage || null,
       text: text,
+      image: imageUrl,
       time: "Just now",
       createdAt: Date.now()
     });
     post.comments = post.commentsList.length;
 
-
     saveData();
     input.value = "";
+    clearCommentPhoto();
     renderCommentsList();
     renderFeed();
 
@@ -1743,6 +1805,7 @@ function renderUserProfileModal() {
         <p>${escapeHTML(person.username)}</p>
         <span class="privacy">Community Member</span>
         ${isNewMember(person) ? `<span class="new-badge">New</span>` : ""}
+        ${memberSinceText(person) ? `<span class="since-badge">${escapeHTML(memberSinceText(person))}</span>` : ""}
       </div>
     </div>
     <p class="user-profile-bio">${escapeHTML(person.bio || "")}</p>
@@ -2029,9 +2092,17 @@ function mediaTilesHTML(posts, beforeOpen) {
   }).join("");
 }
 
+function memberSinceText(member) {
+  const joined = Number(member && member.joinedAt) || 0;
+  if (!joined) return "";
+  return "Member since " + new Date(joined).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
 function renderProfile() {
   const user = currentUser();
   if (!user) return;
+  const sinceEl = document.getElementById("profileSince");
+  if (sinceEl) sinceEl.textContent = memberSinceText(user);
   const social = ensureSocial();
   const ownPosts = data.posts.filter(post => post.username && usernamesMatch(post.username, user.username));
   const savedPosts = data.posts.filter(post => social.savedPostIds.includes(post.id));
@@ -2948,4 +3019,157 @@ if ("serviceWorker" in navigator) {
       console.warn("Service worker registration failed:", err);
     });
   });
+}
+
+
+/* =========================================================
+   LOGO REFRESH, PULL-TO-REFRESH, "NEW POSTS" BUTTON
+========================================================= */
+
+let feedRefreshing = false;
+
+// Tap the logo (or pull down at the top of the page) to fetch the newest posts.
+// For a full browser reload instead, replace the body of this function with: location.reload();
+async function refreshFeed(options) {
+  if (!session || feedRefreshing) return;
+  if (savesInFlight > 0) { showMessage("Saving… try again in a moment."); return; }
+  feedRefreshing = true;
+  hideNewPostsButton();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  try {
+    const fresh = await api("/api/state");
+    data = fresh;
+    renderEverything();
+    refreshAfterSync();
+    if (!(options && options.quiet)) showMessage("Feed refreshed");
+  } catch (error) {
+    showMessage("Couldn't refresh. Check your connection.");
+  } finally {
+    feedRefreshing = false;
+  }
+}
+
+function showNewPostsButton(count) {
+  let btn = document.getElementById("newPostsBtn");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "newPostsBtn";
+    btn.type = "button";
+    btn.className = "new-posts-btn";
+    btn.addEventListener("click", () => refreshFeed({ quiet: true }));
+    document.body.appendChild(btn);
+  }
+  btn.textContent = "\u2191 " + count + (count === 1 ? " new post" : " new posts");
+  btn.classList.add("show");
+}
+
+function hideNewPostsButton() {
+  const btn = document.getElementById("newPostsBtn");
+  if (btn) btn.classList.remove("show");
+}
+
+(function setupPullToRefresh() {
+  const THRESHOLD = 110; // finger travel in px needed to trigger
+  const indicator = document.createElement("div");
+  indicator.className = "pull-indicator";
+  indicator.setAttribute("aria-hidden", "true");
+  document.body.appendChild(indicator);
+  let startY = 0, dist = 0, pulling = false;
+
+  function reset() {
+    pulling = false; dist = 0;
+    indicator.style.transform = "translate(-50%, -60px)";
+    indicator.style.opacity = "0";
+  }
+  reset();
+
+  window.addEventListener("touchstart", e => {
+    if (!session || window.scrollY > 0 || document.querySelector(".modal:not(.hidden)") || e.touches.length !== 1) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+    dist = 0;
+  }, { passive: true });
+
+  window.addEventListener("touchmove", e => {
+    if (!pulling) return;
+    dist = e.touches[0].clientY - startY;
+    if (dist <= 0 || window.scrollY > 0) { reset(); return; }
+    const shown = Math.min(dist * 0.5, 70);
+    indicator.style.transform = "translate(-50%, " + (shown - 60) + "px)";
+    indicator.style.opacity = String(Math.min(1, dist / THRESHOLD));
+    indicator.textContent = dist >= THRESHOLD ? "Release to refresh" : "Pull to refresh";
+  }, { passive: true });
+
+  window.addEventListener("touchend", () => {
+    const shouldRefresh = pulling && dist >= THRESHOLD;
+    reset();
+    if (shouldRefresh) refreshFeed();
+  }, { passive: true });
+  window.addEventListener("touchcancel", reset, { passive: true });
+})();
+
+/* =========================================================
+   DOUBLE-TAP TO LIKE (+ HEART ANIMATION)
+========================================================= */
+
+function spawnHeart(x, y) {
+  const heart = document.createElement("div");
+  heart.className = "heart-pop";
+  heart.textContent = REACTIONS[1]; // the red heart
+  heart.style.left = x + "px";
+  heart.style.top = y + "px";
+  document.body.appendChild(heart);
+  setTimeout(() => heart.remove(), 900);
+}
+
+function likeByDoubleTap(postId, x, y) {
+  const post = data.posts.find(p => p.id === postId);
+  if (!post) return;
+  spawnHeart(x, y);
+  // Like Instagram: double-tapping never un-likes. Only react if the heart isn't already yours.
+  if (ensureSocial().myReactions[postId] !== REACTIONS[1]) toggleReaction(postId, REACTIONS[1]);
+}
+
+(function setupDoubleTapLike() {
+  let lastTime = 0, lastX = 0, lastY = 0;
+  document.addEventListener("pointerup", e => {
+    if (!session || (e.pointerType === "mouse" && e.button !== 0)) return;
+    // Photos always count; text only on touch (so double-click can still select words on desktop).
+    const selector = e.pointerType === "mouse" ? ".post-image, .post-album img" : ".post-image, .post-album img, .post-text";
+    const target = e.target.closest && e.target.closest(selector);
+    const card = target && target.closest(".post-card");
+    if (!card) { lastTime = 0; return; }
+    const now = Date.now();
+    const near = Math.hypot(e.clientX - lastX, e.clientY - lastY) < 40;
+    if (now - lastTime < 320 && near) {
+      lastTime = 0;
+      likeByDoubleTap(Number(card.dataset.postId), e.clientX, e.clientY);
+    } else {
+      lastTime = now; lastX = e.clientX; lastY = e.clientY;
+    }
+  });
+})();
+
+/* =========================================================
+   COMMENT LIKES
+========================================================= */
+
+async function toggleCommentLike(postId, commentId) {
+  const post = data.posts.find(p => p.id === postId);
+  const comment = post && (post.commentsList || []).find(c => c.id === commentId);
+  if (!comment || !session) return;
+  const before = Array.isArray(comment.likes) ? comment.likes.slice() : [];
+  const likes = before.slice();
+  const at = likes.findIndex(u => usernamesMatch(u, session.username));
+  if (at >= 0) likes.splice(at, 1); else likes.push(session.username);
+  comment.likes = likes;          // update instantly, confirm with the server below
+  renderCommentsList(true);
+  try {
+    const result = await api("/api/posts/" + postId + "/comments/" + encodeURIComponent(commentId) + "/like", { method: "POST", body: {} });
+    if (result && Array.isArray(result.likes)) { comment.likes = result.likes; renderCommentsList(true); }
+  } catch (error) {
+    comment.likes = before;       // undo if the server said no
+    renderCommentsList(true);
+    showMessage("Couldn't update that like.");
+  }
 }
