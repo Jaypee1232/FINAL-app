@@ -2333,3 +2333,79 @@ html[data-theme="dark"] .profile-cover {
     background: var(--surface-alt);
 }
 .music-preview .post-music { margin: 0; }
+
+
+/* ===== Added features ===== */
+html { overscroll-behavior-y: contain; }
+
+.top-logo { cursor: pointer; -webkit-tap-highlight-color: transparent; user-select: none; }
+.top-logo:active { opacity: .7; }
+
+.pull-indicator {
+    position: fixed; top: 0; left: 50%; z-index: 3000;
+    padding: 8px 16px; border-radius: 999px;
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); box-shadow: 0 4px 14px var(--shadow);
+    font-size: 13px; font-weight: 600; pointer-events: none;
+    transition: opacity .15s;
+}
+
+.new-posts-btn {
+    position: fixed; top: 76px; left: 50%; transform: translate(-50%, -20px);
+    z-index: 3000; border: 0; border-radius: 999px; padding: 10px 18px;
+    background: var(--pink); color: #fff; font-weight: 700;
+    box-shadow: 0 6px 18px var(--shadow-soft);
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+}
+.new-posts-btn.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+
+.post-image, .post-album img, .post-text { touch-action: manipulation; }
+
+.heart-pop {
+    position: fixed; z-index: 4000; pointer-events: none;
+    font-size: 84px; line-height: 1;
+    transform: translate(-50%, -50%) scale(0);
+    animation: heartPop .85s ease-out forwards;
+    filter: drop-shadow(0 6px 12px rgba(0, 0, 0, .3));
+}
+@keyframes heartPop {
+    0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0; }
+    20%  { transform: translate(-50%, -50%) scale(1.25); opacity: 1; }
+    40%  { transform: translate(-50%, -50%) scale(.95); }
+    70%  { transform: translate(-50%, -80%) scale(1);   opacity: 1; }
+    100% { transform: translate(-50%, -130%) scale(1);  opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .heart-pop { animation-duration: .01s; }
+    .new-posts-btn, .pull-indicator { transition: none; }
+}
+
+.member-since { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.since-badge {
+    display: inline-block; margin-left: 6px; padding: 3px 10px; border-radius: 999px;
+    background: var(--surface-alt); color: var(--muted); font-size: 12px; font-weight: 600;
+}
+
+.pw-wrap { position: relative; display: block; }
+.pw-wrap input { width: 100%; padding-right: 46px; box-sizing: border-box; }
+.pw-toggle {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    border: 0; background: none; color: var(--muted); padding: 6px; cursor: pointer;
+}
+
+.comment-image { display: block; max-width: 100%; max-height: 260px; margin-top: 6px; border-radius: 12px; }
+.comment-like {
+    border: 0; background: none; padding: 4px 0 0; margin-top: 2px;
+    color: var(--muted); font-size: 13px; cursor: pointer; display: block;
+}
+.comment-like.liked { color: var(--pink); font-weight: 700; }
+.comment-form .comment-photo-btn {
+    background: var(--surface-alt); color: var(--text);
+    padding: 0 12px; font-size: 18px; font-weight: 400;
+}
+.comment-photo-preview { position: relative; display: inline-block; margin: 10px 0 0; }
+.comment-photo-preview img { display: block; max-height: 90px; border-radius: 12px; }
+.comment-photo-preview button {
+    position: absolute; top: -8px; right: -8px; width: 24px; height: 24px;
+    border: 0; border-radius: 50%; background: var(--navy); color: #fff; cursor: pointer;
+}
