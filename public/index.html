@@ -101,7 +101,7 @@
   <div id="app" class="app hidden">
 
     <header class="topbar">
-      <div class="top-logo">
+      <div class="top-logo" id="topLogo" role="button" tabindex="0" aria-label="Refresh feed" onclick="refreshFeed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();refreshFeed();}">
         <span>Nea's</span>
         <em>Boarding Horse</em>
       </div>
@@ -203,7 +203,7 @@
               <form id="adminCreateForm" class="admin-form">
                 <label>Full name<input id="adminNewName" type="text" required maxlength="80" placeholder="John Doe"></label>
                 <label>Username<input id="adminNewUsername" type="text" required maxlength="80" placeholder="John@nbh"></label>
-                <label>Password<input id="adminNewPassword" type="password" required minlength="8" placeholder="At least 8 characters"></label>
+                <label>Password<span class="pw-wrap"><input id="adminNewPassword" type="password" required minlength="8" placeholder="At least 8 characters"><button type="button" class="pw-toggle" id="adminNewPasswordToggle" onclick="togglePassword('adminNewPassword')" aria-label="Show password"><span data-icon="eye" class="icon"></span></button></span></label>
                 <button class="primary-btn" type="submit">Create Account</button>
               </form>
             </div>
@@ -235,7 +235,7 @@
             <div class="admin-card-heading">
               <div>
                 <h2>Birthdays 🎂</h2>
-                <p>Private</p>
+                <p>Private — only admins can see these. Members add their own in Edit Profile.</p>
               </div>
             </div>
             <div id="adminBirthdaysList" class="admin-users-list"></div>
@@ -284,6 +284,7 @@
             <div class="profile-info">
               <h1 id="profileName">Nea</h1>
               <p id="profileUsername">@neaspace</p>
+              <p id="profileSince" class="member-since"></p>
               <span class="privacy">Community Member</span>
             </div>
 
@@ -461,15 +462,15 @@
       <form id="changePasswordForm">
         <label>
           Current Password
-          <input type="password" id="currentPassword" autocomplete="current-password">
+          <span class="pw-wrap"><input type="password" id="currentPassword" autocomplete="current-password"><button type="button" class="pw-toggle" id="currentPasswordToggle" onclick="togglePassword('currentPassword')" aria-label="Show password"><span data-icon="eye" class="icon"></span></button></span>
         </label>
         <label>
           New Password
-          <input type="password" id="newPassword" autocomplete="new-password">
+          <span class="pw-wrap"><input type="password" id="newPassword" autocomplete="new-password"><button type="button" class="pw-toggle" id="newPasswordToggle" onclick="togglePassword('newPassword')" aria-label="Show password"><span data-icon="eye" class="icon"></span></button></span>
         </label>
         <label>
           Confirm New Password
-          <input type="password" id="confirmNewPassword" autocomplete="new-password">
+          <span class="pw-wrap"><input type="password" id="confirmNewPassword" autocomplete="new-password"><button type="button" class="pw-toggle" id="confirmNewPasswordToggle" onclick="togglePassword('confirmNewPassword')" aria-label="Show password"><span data-icon="eye" class="icon"></span></button></span>
         </label>
 
         <button class="primary-btn" type="submit">Save Password</button>
@@ -514,8 +515,11 @@
 
       <div id="commentsList" class="comments-list"></div>
 
+      <div id="commentPhotoPreview" class="comment-photo-preview hidden"></div>
       <form id="commentForm" class="comment-form">
-        <input type="text" id="commentInput" aria-label="Comment" placeholder="Add a comment..." autocomplete="off" required>
+        <button type="button" id="commentPhotoBtn" class="comment-photo-btn" aria-label="Add a photo or GIF" onclick="document.getElementById('commentPhotoInput').click()">&#128247;</button>
+        <input type="file" id="commentPhotoInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+        <input type="text" id="commentInput" aria-label="Comment" placeholder="Add a comment..." autocomplete="off">
         <button type="submit">Post</button>
       </form>
     </div>
