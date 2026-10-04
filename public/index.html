@@ -537,6 +537,18 @@
     </div>
   </div>
 
+  <!-- ============ WHO REACTED (sits above the full-screen photo viewer) ============ -->
+  <div id="reactorsModal" class="modal hidden" style="z-index:160" role="dialog" aria-modal="true" aria-label="Reactions">
+    <div class="modal-box post-view-box">
+      <div class="modal-header">
+        <button onclick="closeModal('reactorsModal')" aria-label="Close">×</button>
+        <strong>Reactions</strong>
+        <span></span>
+      </div>
+      <div id="reactorsContent"></div>
+    </div>
+  </div>
+
   <!-- ============ VIEW OTHER USER'S PROFILE MODAL ============ -->
   <div id="userProfileModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Member profile">
     <div class="modal-box post-view-box">
