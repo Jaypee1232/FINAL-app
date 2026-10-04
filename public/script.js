@@ -225,9 +225,11 @@ async function attemptSave(retriesLeft) {
       let changed = false;
       result.posts.forEach(sp => {
         const lp = data.posts.find(p => p.id === sp.id);
-        if (lp && (JSON.stringify(lp.reactions || {}) !== JSON.stringify(sp.reactions) || (lp.shares || 0) !== sp.shares)) {
+        if (lp && (JSON.stringify(lp.reactions || {}) !== JSON.stringify(sp.reactions) || (lp.shares || 0) !== sp.shares
+            || JSON.stringify(lp.reactors || []) !== JSON.stringify(sp.reactors || []))) {
           lp.reactions = sp.reactions;
           lp.shares = sp.shares;
+          if (Array.isArray(sp.reactors)) lp.reactors = sp.reactors;
           changed = true;
         }
       });
@@ -290,6 +292,7 @@ function refreshAfterSync() {
   if (pv && !pv.classList.contains("hidden")) refreshPostView();
   const cm = document.getElementById("commentsModal");
   if (cm && !cm.classList.contains("hidden") && typeof renderCommentsList === "function") renderCommentsList();
+  if (typeof refreshLightbox === "function") refreshLightbox();
 }
 
 async function pollState() {
@@ -1051,9 +1054,9 @@ function postCardHTML(post, options = {}) {
         <button class="${isRepostedByCurrentUser(post.id) ? "shared" : ""}" onclick="sharePost(${post.id})"><span class="icon">${iconSVG("repeat")}</span> ${post.shares || 0}</button>
         <button class="save-button" onclick="savePost(${post.id})" aria-label="${saved ? "Remove from saved" : "Save post"}"><span class="icon">${iconSVG("bookmark", { filled: saved })}</span></button>
       </div>
-      <div class="post-reactions">
-        ${totalReactions(post) > 0 ? `${totalReactions(post)} people reacted to this post` : "Be the first to react"}
-      </div>
+      ${totalReactions(post) > 0
+        ? `<button type="button" class="post-reactions post-reactions-link" onclick="openReactors(${post.id})">${totalReactions(post)} ${totalReactions(post) === 1 ? "person" : "people"} reacted to this post</button>`
+        : `<div class="post-reactions">Be the first to react</div>`}
     </article>
   `;
 }
@@ -1104,12 +1107,20 @@ function toggleReaction(id, emoji) {
     social.myReactions[id] = emoji;
   }
 
+  // Keep the "who reacted" list in step right away (the server confirms it on save).
+  if (user) {
+    post.reactors = (Array.isArray(post.reactors) ? post.reactors : []).filter(r => !usernamesMatch(r.username, user.username));
+    if (social.myReactions[id]) post.reactors.push({ username: user.username, emoji: social.myReactions[id] });
+  }
+
 
 
   saveData();
   renderFeed();
   renderProfile();
   if (activePostId === id) refreshPostView();
+  refreshLightbox();
+  refreshReactorsSheet();
 }
 
 /* =========================================================
@@ -1407,6 +1418,245 @@ function refreshPostView() {
   const content = document.getElementById("postViewContent");
   if (!post || !content) return;
   content.innerHTML = postCardHTML(post);
+}
+
+/* =========================================================
+   FULL-SCREEN PHOTO VIEWER (lightbox)
+   Tap a photo -> full screen. Swipe left/right (or use the arrows /
+   keyboard) to move between photos in the same post, swipe down or
+   tap X to close. Shows who reacted and lets you react from here.
+========================================================= */
+
+const lightboxState = { postId: null, images: [], index: 0 };
+let lightboxEl = null;
+
+function postImageList(post) {
+  if (!post) return [];
+  if (Array.isArray(post.images) && post.images.length) return post.images.slice();
+  return post.image ? [post.image] : [];
+}
+
+function buildLightbox() {
+  if (lightboxEl) return lightboxEl;
+  const el = document.createElement("div");
+  el.id = "lightbox";
+  el.className = "lightbox hidden";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-modal", "true");
+  el.setAttribute("aria-label", "Photo viewer");
+  el.innerHTML = `
+    <div class="lightbox-top">
+      <button type="button" class="lightbox-close" aria-label="Close">&times;</button>
+      <span class="lightbox-counter"></span>
+      <span class="lightbox-spacer"></span>
+    </div>
+    <div class="lightbox-stage"><div class="lightbox-track"></div></div>
+    <button type="button" class="lightbox-nav prev" aria-label="Previous photo">&#8249;</button>
+    <button type="button" class="lightbox-nav next" aria-label="Next photo">&#8250;</button>
+    <div class="lightbox-bottom">
+      <div class="lightbox-caption"></div>
+      <button type="button" class="lightbox-who"></button>
+      <div class="lightbox-reactions"></div>
+    </div>`;
+  document.body.appendChild(el);
+  lightboxEl = el;
+
+  el.querySelector(".lightbox-close").addEventListener("click", closeLightbox);
+  el.querySelector(".lightbox-nav.prev").addEventListener("click", () => lightboxGo(-1));
+  el.querySelector(".lightbox-nav.next").addEventListener("click", () => lightboxGo(1));
+  el.querySelector(".lightbox-who").addEventListener("click", () => openReactors(lightboxState.postId));
+
+  // ---- swipe handling (finger follows; release snaps to next/prev/close) ----
+  const stage = el.querySelector(".lightbox-stage");
+  const track = el.querySelector(".lightbox-track");
+  let startX = 0, startY = 0, dx = 0, dy = 0, startT = 0, dragging = false, axis = null;
+
+  stage.addEventListener("pointerdown", e => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    dragging = true; axis = null; dx = 0; dy = 0;
+    startX = e.clientX; startY = e.clientY; startT = Date.now();
+    track.style.transition = "none";
+    try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  stage.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    dx = e.clientX - startX; dy = e.clientY - startY;
+    if (!axis && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    const last = lightboxState.images.length - 1;
+    if (axis === "x") {
+      let shown = dx;
+      if ((lightboxState.index === 0 && dx > 0) || (lightboxState.index === last && dx < 0)) shown = dx * 0.35; // rubber-band at the ends
+      track.style.transform = `translate3d(calc(${-lightboxState.index * 100}% + ${shown}px), 0, 0)`;
+    } else if (axis === "y") {
+      track.style.transform = `translate3d(${-lightboxState.index * 100}%, ${dy}px, 0)`;
+      el.style.background = `rgba(0,0,0,${Math.max(0.35, 0.96 - Math.abs(dy) / 500)})`;
+    }
+  });
+
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    track.style.transition = "";
+    el.style.background = "";
+    const width = stage.clientWidth || 1;
+    const fast = Math.abs(dx) / Math.max(1, Date.now() - startT) > 0.45; // px per ms
+    if (axis === "x" && e.type !== "pointercancel" && (Math.abs(dx) > width * 0.2 || (fast && Math.abs(dx) > 30))) {
+      lightboxGo(dx < 0 ? 1 : -1);
+    } else if (axis === "y" && e.type !== "pointercancel" && Math.abs(dy) > 110) {
+      closeLightbox();
+      return;
+    } else if (!axis && e.type === "pointerup") {
+      el.classList.toggle("chrome-hidden"); // plain tap: hide/show the controls
+    }
+    lightboxPosition();
+  }
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+
+  return el;
+}
+
+function lightboxPosition() {
+  const track = lightboxEl && lightboxEl.querySelector(".lightbox-track");
+  if (track) track.style.transform = `translate3d(${-lightboxState.index * 100}%, 0, 0)`;
+  const total = lightboxState.images.length;
+  const counter = lightboxEl.querySelector(".lightbox-counter");
+  counter.textContent = total > 1 ? `${lightboxState.index + 1} / ${total}` : "";
+  lightboxEl.querySelector(".lightbox-nav.prev").classList.toggle("hidden", lightboxState.index <= 0);
+  lightboxEl.querySelector(".lightbox-nav.next").classList.toggle("hidden", lightboxState.index >= total - 1);
+}
+
+function lightboxGo(step) {
+  const next = lightboxState.index + step;
+  if (next < 0 || next > lightboxState.images.length - 1) { lightboxPosition(); return; }
+  lightboxState.index = next;
+  lightboxPosition();
+}
+
+function openLightbox(postId, index) {
+  const post = data.posts.find(p => p.id === postId);
+  const images = postImageList(post);
+  if (!post || !images.length) return;
+  buildLightbox();
+  lightboxState.postId = postId;
+  lightboxState.images = images;
+  lightboxState.index = Math.min(Math.max(0, index || 0), images.length - 1);
+  lightboxEl.querySelector(".lightbox-track").innerHTML = images
+    .map(src => `<div class="lightbox-slide"><img src="${escapeHTML(src)}" alt="Photo" draggable="false"></div>`)
+    .join("");
+  lightboxEl.classList.remove("hidden", "chrome-hidden");
+  document.body.classList.add("lightbox-open");
+  lightboxPosition();
+  refreshLightbox();
+}
+
+function closeLightbox() {
+  if (!lightboxEl) return;
+  lightboxEl.classList.add("hidden");
+  document.body.classList.remove("lightbox-open");
+  closeModal("reactorsModal");
+  lightboxState.postId = null;
+}
+
+// Re-draws the caption, reaction summary and reaction buttons (e.g. after a sync or a tap).
+function refreshLightbox() {
+  if (!lightboxEl || lightboxEl.classList.contains("hidden")) return;
+  const post = data.posts.find(p => p.id === lightboxState.postId);
+  if (!post) { closeLightbox(); return; } // the post was deleted while viewing
+
+  const author = findUser(post.username) || { name: post.name };
+  const caption = lightboxEl.querySelector(".lightbox-caption");
+  caption.innerHTML = `<strong>${escapeHTML(author.name || "")}</strong>${post.text ? " " + escapeHTML(post.text) : ""}`;
+
+  const total = totalReactions(post);
+  const top = REACTIONS.filter(e => post.reactions && post.reactions[e] > 0)
+    .sort((a, b) => post.reactions[b] - post.reactions[a]).slice(0, 3).join("");
+  const who = lightboxEl.querySelector(".lightbox-who");
+  who.textContent = total > 0 ? `${top} ${total} · See who reacted` : "No reactions yet";
+  who.disabled = total === 0;
+
+  const mine = (ensureSocial().myReactions || {})[post.id];
+  lightboxEl.querySelector(".lightbox-reactions").innerHTML = REACTIONS.map(emoji =>
+    `<button type="button" class="${mine === emoji ? "active" : ""}" onclick="toggleReaction(${post.id}, '${emoji}')" aria-label="React ${emoji}">${emoji}</button>`
+  ).join("");
+}
+
+window.addEventListener("keydown", event => {
+  if (!lightboxEl || lightboxEl.classList.contains("hidden")) return;
+  const sheetOpen = !document.getElementById("reactorsModal")?.classList.contains("hidden");
+  if (event.key === "Escape") {
+    if (sheetOpen) { closeModal("reactorsModal"); event.stopImmediatePropagation(); }
+    else closeLightbox();
+  } else if (!sheetOpen && event.key === "ArrowLeft") lightboxGo(-1);
+  else if (!sheetOpen && event.key === "ArrowRight") lightboxGo(1);
+}, true);
+
+/* =========================================================
+   WHO REACTED (list of members + their emoji)
+========================================================= */
+
+let reactorsPostId = null;
+let reactorsFilter = "all";
+
+function openReactors(postId) {
+  const post = data.posts.find(p => p.id === postId);
+  if (!post) return;
+  reactorsPostId = postId;
+  reactorsFilter = "all";
+  renderReactorsSheet();
+  document.getElementById("reactorsModal")?.classList.remove("hidden");
+}
+
+function refreshReactorsSheet() {
+  const modal = document.getElementById("reactorsModal");
+  if (modal && !modal.classList.contains("hidden")) renderReactorsSheet();
+}
+
+function renderReactorsSheet() {
+  const content = document.getElementById("reactorsContent");
+  const post = data.posts.find(p => p.id === reactorsPostId);
+  if (!content || !post) return;
+
+  const all = (Array.isArray(post.reactors) ? post.reactors : []).filter(r => REACTIONS.includes(r.emoji));
+  if (!all.length) {
+    content.innerHTML = `<p class="no-results">${totalReactions(post) > 0 ? "Loading who reacted…" : "No reactions yet."}</p>`;
+    return;
+  }
+  if (reactorsFilter !== "all" && !all.some(r => r.emoji === reactorsFilter)) reactorsFilter = "all";
+
+  const chips = [`<button type="button" class="${reactorsFilter === "all" ? "active" : ""}" onclick="setReactorsFilter('all')">All ${all.length}</button>`]
+    .concat(REACTIONS.filter(e => all.some(r => r.emoji === e)).map(e =>
+      `<button type="button" class="${reactorsFilter === e ? "active" : ""}" onclick="setReactorsFilter('${e}')">${e} ${all.filter(r => r.emoji === e).length}</button>`));
+
+  const me = currentUser();
+  const rows = all
+    .filter(r => reactorsFilter === "all" || r.emoji === reactorsFilter)
+    .sort((a, b) => (usernamesMatch(b.username, me && me.username) ? 1 : 0) - (usernamesMatch(a.username, me && me.username) ? 1 : 0))
+    .map(r => {
+      const u = findUser(r.username) || { name: r.username, avatar: avatarLetter(r.username) };
+      const isMe = usernamesMatch(r.username, me && me.username);
+      const avatar = u.avatarImage ? `<img src="${escapeHTML(u.avatarImage)}" alt="">` : escapeHTML(u.avatar || avatarLetter(u.name));
+      return `<button type="button" class="reactor-row" onclick="openReactorProfile('${escapeHTML(r.username)}')">
+        <span class="avatar">${avatar}</span>
+        <span class="reactor-name">${escapeHTML(u.name)}${isMe ? " (You)" : ""}</span>
+        <span class="reactor-emoji">${r.emoji}</span>
+      </button>`;
+    }).join("");
+
+  content.innerHTML = `<div class="reactor-chips">${chips.join("")}</div><div class="reactor-list">${rows}</div>`;
+}
+
+function setReactorsFilter(emoji) {
+  reactorsFilter = emoji;
+  renderReactorsSheet();
+}
+
+function openReactorProfile(username) {
+  closeModal("reactorsModal");
+  closeLightbox();
+  closeModal("postViewModal");
+  openUserProfile(username);
 }
 
 /* =========================================================
@@ -3084,7 +3334,7 @@ function hideNewPostsButton() {
   reset();
 
   window.addEventListener("touchstart", e => {
-    if (!session || window.scrollY > 0 || document.querySelector(".modal:not(.hidden)") || e.touches.length !== 1) return;
+    if (!session || window.scrollY > 0 || document.querySelector(".modal:not(.hidden), .lightbox:not(.hidden)") || e.touches.length !== 1) return;
     startY = e.touches[0].clientY;
     pulling = true;
     dist = 0;
@@ -3132,8 +3382,14 @@ function likeByDoubleTap(postId, x, y) {
 
 (function setupDoubleTapLike() {
   let lastTime = 0, lastX = 0, lastY = 0;
+  let downX = 0, downY = 0;
+  let openTimer = null;
+  const PHOTO_SELECTOR = ".post-image, .post-album img";
+  document.addEventListener("pointerdown", e => { downX = e.clientX; downY = e.clientY; });
   document.addEventListener("pointerup", e => {
     if (!session || (e.pointerType === "mouse" && e.button !== 0)) return;
+    // A drag/scroll that ended on a photo is not a tap.
+    const moved = Math.hypot(e.clientX - downX, e.clientY - downY) > 12;
     // Photos always count; text only on touch (so double-click can still select words on desktop).
     const selector = e.pointerType === "mouse" ? ".post-image, .post-album img" : ".post-image, .post-album img, .post-text";
     const target = e.target.closest && e.target.closest(selector);
@@ -3141,11 +3397,22 @@ function likeByDoubleTap(postId, x, y) {
     if (!card) { lastTime = 0; return; }
     const now = Date.now();
     const near = Math.hypot(e.clientX - lastX, e.clientY - lastY) < 40;
+    if (moved) { lastTime = 0; return; }
     if (now - lastTime < 320 && near) {
       lastTime = 0;
+      // Second tap of a double-tap: like it, and do NOT open the full-screen viewer.
+      clearTimeout(openTimer); openTimer = null;
       likeByDoubleTap(Number(card.dataset.postId), e.clientX, e.clientY);
     } else {
       lastTime = now; lastX = e.clientX; lastY = e.clientY;
+      // Single tap on a photo: open it full screen (after waiting to see if a 2nd tap follows).
+      if (target.matches(PHOTO_SELECTOR)) {
+        const postId = Number(card.dataset.postId);
+        const album = Array.from(card.querySelectorAll(".post-album img"));
+        const index = target.classList.contains("post-image") ? 0 : Math.max(0, album.indexOf(target));
+        clearTimeout(openTimer);
+        openTimer = setTimeout(() => { openTimer = null; openLightbox(postId, index); }, 300);
+      }
     }
   });
 })();
