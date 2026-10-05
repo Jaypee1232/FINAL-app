@@ -567,6 +567,29 @@ app.post("/api/upload", requireAuth, async (req, res) => {
 // SHARED APP STATE (users' public profiles, posts, social)
 // ---------------------------------------------------------
 
+// Builds { postId -> [{ username, emoji }] } from every member's own reaction
+// state, so the app can show WHO reacted. Only usernames + emoji are exposed
+// (never anyone's other private social data), and it is recomputed on every
+// read rather than stored, so it can never go stale or be forged.
+function reactorsByPost(social) {
+  const map = new Map();
+  for (const [username, s] of Object.entries(social || {})) {
+    const mine = s && isPlainObject(s.myReactions) ? s.myReactions : {};
+    for (const [postIdStr, emoji] of Object.entries(mine)) {
+      if (!REACTIONS.includes(emoji)) continue;
+      const postId = Number(postIdStr);
+      if (!map.has(postId)) map.set(postId, []);
+      map.get(postId).push({ username, emoji });
+    }
+  }
+  return map;
+}
+
+function postsWithReactors(posts, social) {
+  const map = reactorsByPost(social);
+  return (posts || []).map(post => ({ ...post, reactors: map.get(post.id) || [] }));
+}
+
 app.get("/api/state", requireAuth, ah(async (req, res) => {
   const state = await readState();
   const ownSocial = state.social?.[req.username] || defaultSocialFor();
@@ -579,7 +602,7 @@ app.get("/api/state", requireAuth, ah(async (req, res) => {
       isAdmin: !!u.isAdmin, disabled: !!u.disabled,
       joinedAt: Number(u.joinedAt) || 0
     })),
-    posts: state.posts,
+    posts: postsWithReactors(state.posts, state.social),
     social: { [req.username]: ownSocial },
     rev: Number(state.rev) || 0
   });
@@ -1019,7 +1042,7 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     const fresh = await readState();
     return res.status(409).json({
       error: "Someone else just updated the feed. It has been refreshed, so please try again.",
-      state: { users: fresh.users, posts: fresh.posts, social: { [req.username]: fresh.social?.[req.username] || defaultSocialFor() }, rev: Number(fresh.rev) || 0 }
+      state: { users: fresh.users, posts: postsWithReactors(fresh.posts, fresh.social), social: { [req.username]: fresh.social?.[req.username] || defaultSocialFor() }, rev: Number(fresh.rev) || 0 }
     });
   }
   finalState.rev = currentRev + 1;
@@ -1029,7 +1052,10 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     rev: finalState.rev,
     // True totals (reactions/shares are recomputed from every member), so the
     // saving client never keeps showing a stale count.
-    posts: finalPosts.map(post => ({ id: post.id, reactions: post.reactions || {}, shares: post.shares || 0 }))
+    posts: (() => {
+      const reactors = reactorsByPost(finalSocial);
+      return finalPosts.map(post => ({ id: post.id, reactions: post.reactions || {}, shares: post.shares || 0, reactors: reactors.get(post.id) || [] }));
+    })()
   });
 }));
 
