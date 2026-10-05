@@ -3515,8 +3515,11 @@ function updateMentionBox(field) {
   const m = /(^|\s)@([A-Za-z0-9_.-]{0,40})$/.exec(before);
   if (!m) return hideMentionBox();
   const q = m[2].toLowerCase();
-  const matches = otherMembers(me.username).filter(u => !u.disabled &&
-    (mentionHandle(u).toLowerCase().startsWith(q) || u.name.toLowerCase().startsWith(q))).slice(0, 5);
+  // Match the start of the handle, or the start of any word in the member's name.
+  const matches = otherMembers(me.username).filter(u => !u.disabled && (
+    mentionHandle(u).toLowerCase().startsWith(q) ||
+    String(u.name || "").toLowerCase().split(/\s+/).some(w => w.startsWith(q))
+  )).slice(0, 8);
   if (!matches.length) return hideMentionBox();
   mentionTarget = { field, start: caret - q.length - 1, end: caret };
   mentionBox.innerHTML = matches.map(u => {
@@ -3526,7 +3529,12 @@ function updateMentionBox(field) {
   const r = field.getBoundingClientRect();
   mentionBox.style.left = Math.max(8, r.left) + "px";
   mentionBox.style.width = Math.min(r.width, window.innerWidth - 16) + "px";
-  mentionBox.style.bottom = (window.innerHeight - r.top + 6) + "px";
+  // On phones the keyboard shrinks the visual viewport, so measure from that, not the full window.
+  const vv = window.visualViewport;
+  const viewBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  mentionBox.style.bottom = Math.max(8, window.innerHeight - Math.min(r.top, viewBottom) + 6) + "px";
+  mentionBox.style.maxHeight = Math.max(120, Math.min(r.top, viewBottom) - 16) + "px";
+  mentionBox.style.overflowY = "auto";
   mentionBox.classList.remove("hidden");
 }
 
