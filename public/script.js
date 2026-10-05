@@ -3176,8 +3176,8 @@ function togglePreview(btn, url, start) {
   startPreview(btn, url, start, false);
 }
 
-/* Autoplay: a post's music starts by itself when that post is scrolled into view
-   and stops when it scrolls away. Browsers (iPhone Safari especially) only allow
+/* Autoplay: a post's music starts by itself when that post's PHOTO is scrolled into view
+   and stops when the photo scrolls away. Browsers (iPhone Safari especially) only allow
    sound after the member has touched the page once, so the first tap unlocks it. */
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 let audioUnlocked = false;
@@ -3225,7 +3225,8 @@ function pickVisibleMusic() {
 const musicObserver = ("IntersectionObserver" in window)
   ? new IntersectionObserver(entries => {
       entries.forEach(entry => {
-        const card = entry.target;
+        const card = entry.target.closest(".post-card"); // the observed element is the post's photo
+        if (!card) return;
         const needed = Math.min(entry.boundingClientRect.height * 0.6, window.innerHeight * 0.5);
         if (entry.isIntersecting && entry.intersectionRect.height >= needed) {
           musicVisible.set(card, entry.intersectionRect.height);
@@ -3241,10 +3242,14 @@ const musicObserver = ("IntersectionObserver" in window)
 
 function observeMusicPosts() {
   if (!musicObserver) return;
+  // Only the post's PHOTO is watched. Music autoplays while the photo is on screen and
+  // never for posts without a photo (or with a video); those still have the play button.
   document.querySelectorAll(".post-card").forEach(card => {
-    if (card._musicWatched || !card.querySelector(".post-music")) return;
-    card._musicWatched = true;
-    musicObserver.observe(card);
+    if (!card.querySelector(".post-music")) return;
+    const photo = card.querySelector(".post-image, .post-album");
+    if (!photo || photo._musicWatched) return;
+    photo._musicWatched = true;
+    musicObserver.observe(photo);
   });
 }
 
