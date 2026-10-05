@@ -677,12 +677,70 @@ function sanitizeMusic(m) {
   };
 }
 
+// ---------------------------------------------------------
+// TAGS + @MENTIONS
+// A "tag" is a member picked in the composer ("with Nea, Axel"). A "mention"
+// is an @handle typed inside post/comment text. The handle is the part of the
+// username before the "@" (Jaypee@nbh -> @Jaypee). Both are always checked
+// against the real member list, so nobody can tag a name that doesn't exist.
+// ---------------------------------------------------------
+const MAX_TAGS_PER_POST = 10;
+const MAX_MENTIONS_PER_ITEM = 10;
+
+function mentionHandle(user) {
+  return String((user && user.username) || "").split("@")[0];
+}
+
+function activeUsers(users) {
+  return (Array.isArray(users) ? users : []).filter(u => u && u.username && !u.disabled);
+}
+
+function sanitizeTags(value, users, authorUsername) {
+  if (!Array.isArray(value)) return [];
+  const roster = activeUsers(users);
+  const author = String(authorUsername || "").toLowerCase();
+  const seen = new Set();
+  const out = [];
+  for (const raw of value) {
+    if (typeof raw !== "string") continue;
+    const key = raw.trim().toLowerCase();
+    const user = roster.find(u => String(u.username).toLowerCase() === key);
+    if (!user) continue;
+    const canonical = String(user.username).toLowerCase();
+    if (canonical === author || seen.has(canonical)) continue;
+    seen.add(canonical);
+    out.push(user.username);
+    if (out.length >= MAX_TAGS_PER_POST) break;
+  }
+  return out;
+}
+
+// Returns the usernames of members @mentioned in `text` (never the sender).
+function extractMentions(text, users, senderUsername) {
+  const roster = activeUsers(users);
+  const sender = String(senderUsername || "").toLowerCase();
+  const found = new Map();
+  const re = /(^|[^\w@])@([A-Za-z0-9_.-]{2,40})/g;
+  let m;
+  while ((m = re.exec(String(text || ""))) !== null) {
+    const handle = m[2].replace(/[.\-]+$/, "").toLowerCase();
+    if (!handle) continue;
+    const user = roster.find(u => mentionHandle(u).toLowerCase() === handle);
+    if (!user) continue;
+    const key = String(user.username).toLowerCase();
+    if (key === sender || found.has(key)) continue;
+    found.set(key, user.username);
+    if (found.size >= MAX_MENTIONS_PER_ITEM) break;
+  }
+  return Array.from(found.values());
+}
+
 // Builds the one post object a member is allowed to have produced, given
 // what they sent (incomingPost) and — for edits — what the server already
 // has (currentPost). Content authorship (who wrote it, what it says, its
 // media) can only be set by the post's own author (or an admin); every
 // other member's save can only ever leave those fields untouched.
-function sanitizePost(incomingPost, currentPost, req, authorProfile) {
+function sanitizePost(incomingPost, currentPost, req, authorProfile, users) {
   const isOwnerOrAdmin = currentPost
     ? (currentPost.username === req.username || req.isAdmin)
     : true; // brand-new post: ownership is enforced by forcing author fields below
@@ -711,6 +769,11 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile) {
     if (!base.image) delete base.image;
     const music = sanitizeMusic(incomingPost.music);
     if (music) base.music = music; else delete base.music;
+    // Tags are chosen when the post is created and then stay as they were.
+    if (!currentPost) {
+      const tags = sanitizeTags(incomingPost.tags, users, req.username);
+      if (tags.length) base.tags = tags; else delete base.tags;
+    }
   }
   // Non-owners editing an existing post: `base` already equals currentPost,
   // so authorship/text/media are left exactly as the server had them.
@@ -885,13 +948,13 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
       finalPostsById.set(currentPost.id, currentPost);
       continue;
     }
-    finalPostsById.set(currentPost.id, sanitizePost(incomingPost, currentPost, req, authorProfile));
+    finalPostsById.set(currentPost.id, sanitizePost(incomingPost, currentPost, req, authorProfile, finalUsers));
   }
   // Any post the sender listed that the server doesn't have yet is a new
   // post — only allowed to be authored as the sender themselves.
   for (const [id, incomingPost] of incomingPostsById) {
     if (finalPostsById.has(id)) continue;
-    finalPostsById.set(id, sanitizePost(incomingPost, null, req, authorProfile));
+    finalPostsById.set(id, sanitizePost(incomingPost, null, req, authorProfile, finalUsers));
   }
   // Preserve the sender's ordering where possible (newest-first), then
   // append anything they didn't include but weren't allowed to delete.
@@ -973,8 +1036,13 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
   const oldOwnSocial = current.social?.[req.username] || defaultSocialFor();
   const newOwnSocial = finalSocial[req.username] || defaultSocialFor();
   const pushQueue = [];
+  const notifiedKeys = new Set();
   const notify = (username, notification) => {
     if (!username || username.toLowerCase() === req.username.toLowerCase()) return;
+    // One notification per member, per post, per kind of event in a single save.
+    const dedupeKey = [username.toLowerCase(), notification.postId, notification.text].join("|");
+    if (notifiedKeys.has(dedupeKey)) return;
+    notifiedKeys.add(dedupeKey);
     pushQueue.push({ username, notification });
     if (!finalSocial[username]) finalSocial[username] = defaultSocialFor();
     finalSocial[username].notifications = [notification, ...(finalSocial[username].notifications || [])].slice(0, 300);
@@ -1005,13 +1073,21 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
     }
   }
   const oldPostIds = new Set(current.posts.map(p => p.id));
+  const whoAmI = () => ({ name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null });
   for (const post of finalPosts) {
     if (!oldPostIds.has(post.id) && post.username === req.username) {
       const kind = post.video ? "shared a new video" : (post.image || post.images?.length) ? "shared a new photo" : "shared a new update";
+      // Tagged / @mentioned members get a more specific notification instead of the generic one.
+      const taggedKeys = new Set((post.tags || []).map(u => String(u).toLowerCase()));
+      const mentionedKeys = new Set(extractMentions(post.text, finalUsers, req.username).map(u => u.toLowerCase()));
       for (const user of finalUsers) {
-        if (user.username !== req.username) notify(user.username, {
-          name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-          text: kind, time: "Just now", createdAt: Date.now(), unread: true, type: "new_post", postId: post.id
+        if (user.username === req.username) continue;
+        const key = String(user.username).toLowerCase();
+        let text = kind, type = "new_post";
+        if (taggedKeys.has(key)) { text = "tagged you in a post"; type = "tag"; }
+        else if (mentionedKeys.has(key)) { text = "mentioned you in a post"; type = "mention"; }
+        notify(user.username, {
+          ...whoAmI(), text, time: "Just now", createdAt: Date.now(), unread: true, type, postId: post.id
         });
       }
     }
@@ -1019,14 +1095,25 @@ app.post("/api/state", requireAuth, ah(async (req, res) => {
 
   // Detect newly appended comments by comparing the server's old post with the
   // sanitized final post. Only the current member's newly added comments can trigger this.
+  // Anyone @mentioned in a new comment is told (on any post, including the sender's own);
+  // the post's owner is told about the comment unless the mention already covers them.
   for (const oldPost of current.posts) {
     const newPost = finalPosts.find(p => p.id === oldPost.id);
-    if (!newPost || newPost.username === req.username) continue;
+    if (!newPost) continue;
     const oldLen = Array.isArray(oldPost.commentsList) ? oldPost.commentsList.length : 0;
     const newLen = Array.isArray(newPost.commentsList) ? newPost.commentsList.length : 0;
-    if (newLen > oldLen) notify(newPost.username, {
-      name: authorProfile.name, avatar: authorProfile.avatar, avatarImage: authorProfile.avatarImage || null,
-      text: "commented on your post", time: "Just now", createdAt: Date.now(), unread: true, postId: newPost.id
+    if (newLen <= oldLen) continue;
+    const mentioned = new Map();
+    for (const c of newPost.commentsList.slice(oldLen)) {
+      for (const u of extractMentions(c && c.text, finalUsers, req.username)) mentioned.set(u.toLowerCase(), u);
+    }
+    for (const username of mentioned.values()) {
+      notify(username, {
+        ...whoAmI(), text: "mentioned you in a comment", time: "Just now", createdAt: Date.now(), unread: true, type: "mention", postId: newPost.id
+      });
+    }
+    if (newPost.username !== req.username && !mentioned.has(String(newPost.username).toLowerCase())) notify(newPost.username, {
+      ...whoAmI(), text: "commented on your post", time: "Just now", createdAt: Date.now(), unread: true, postId: newPost.id
     });
   }
 
