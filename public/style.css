@@ -1445,7 +1445,7 @@ html[data-theme="dark"] .profile-cover {
 
 .post-tools {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     border: 1px solid var(--border);
     border-radius: 13px;
     overflow: hidden;
@@ -2585,3 +2585,41 @@ body.lightbox-open { overflow: hidden; }
 .reactor-row .avatar img { width: 100%; height: 100%; object-fit: cover; }
 .reactor-name { flex: 1; font-weight: 600; }
 .reactor-emoji { font-size: 22px; }
+
+
+/* ===== Tags + @mentions ===== */
+a.mention { color: var(--pink); font-weight: 600; text-decoration: none; }
+a.mention:active { opacity: .7; }
+.post-tagged {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 14px 6px; color: var(--muted); font-size: 14px;
+}
+.post-tagged svg { width: 15px; height: 15px; flex: none; }
+.tag-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+.tag-preview .tag-label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 14px; }
+.tag-preview .tag-label svg { width: 15px; height: 15px; }
+.tag-chip {
+    border: 1px solid var(--border); background: var(--surface-alt); color: var(--text);
+    border-radius: 999px; padding: 5px 10px; font-size: 14px;
+}
+.tag-chip b { margin-left: 4px; color: var(--muted); }
+.tag-done { border: 0; background: none; color: var(--pink); font-weight: 700; font-size: 15px; }
+.mp-use.on { background: var(--surface-alt); color: var(--text); border: 1px solid var(--border); }
+.mention-box {
+    position: fixed; z-index: 11000;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.25); overflow: hidden;
+}
+.mention-box.hidden { display: none; }
+.mention-box button {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 12px; border: 0; border-bottom: 1px solid var(--border);
+    background: transparent; color: var(--text); text-align: left;
+}
+.mention-box button:last-child { border-bottom: 0; }
+.mention-box img, .mention-box .mb-av {
+    width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex: none;
+    display: flex; align-items: center; justify-content: center; background: var(--surface-alt);
+}
+.mention-box span { display: flex; flex-direction: column; min-width: 0; }
+.mention-box small { color: var(--muted); }
