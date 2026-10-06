@@ -156,12 +156,20 @@ a.hashtag:hover { text-decoration: underline; }
 }
 .to-top.show { opacity: 1; transform: none; pointer-events: auto; }
 @media (min-width: 901px) { .to-top { bottom: 28px; right: 28px; } }
-.offline-banner {
-    position: fixed; left: 0; right: 0; top: 0; z-index: 70; text-align: center; font-size: 13.5px; font-weight: 600;
-    padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; background: #b4476b; color: #fff;
-    transform: translateY(-110%); transition: transform .3s var(--ease);
+/* ---------- "You are offline" bar (see script.js: setOffline) ---------- */
+.net-banner {
+    position: fixed; left: 0; right: 0; top: 0; z-index: 400; display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px; background: #c0334d; color: #fff; text-align: left;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+    transform: translateY(-110%); transition: transform .3s var(--ease); pointer-events: none;
 }
-.offline-banner.show { transform: none; }
+.net-banner.show { transform: none; }
+.net-banner .net-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #fff; animation: netPulse 1.6s ease-in-out infinite; }
+.net-banner .net-text { display: flex; flex-direction: column; line-height: 1.25; }
+.net-banner b { font-size: 14px; }
+.net-banner small { font-size: 12px; opacity: .92; }
+@keyframes netPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+html.is-offline .comment-photo-btn, html.is-offline .comment-gif-btn { opacity: .5; }
 
 /* ---------- Motion safety ---------- */
 @media (prefers-reduced-motion: reduce) {
