@@ -1288,44 +1288,15 @@ if (bannerInput) {
       showMessage("Please choose an image file.");
       return;
     }
-    // The photo is resized to the banner shape automatically (centered, filling the whole banner).
-    if (isOffline()) { showMessage("You are offline. Connect to the internet to change your cover photo."); return; }
-    showMessage("Fitting your photo to the cover…");
+    // Opens the cover editor: the photo is already fitted to the banner shape;
+    // the member can drag, zoom and rotate it, then Save (same as the profile picture).
     try {
-      const user = currentUser();
-      if (!user) return;
-      const dataUrl = await fitImageToBanner(file);
-      const url = await uploadMedia(dataUrl, "image");
-      user.bannerImage = url;
-      if (saveData()) {
-        applyProfileCover(user);
-        showMessage("Cover photo updated!");
-      }
+      await openAvatarEditor(file, "banner");
     } catch (error) {
       console.error(error);
-      showMessage((error && error.message) || "Couldn't update your cover photo.");
+      showMessage("Couldn't open that image.");
     }
   });
-}
-
-// Scales + center-crops any photo to the banner's 3:1 shape (1500x500) so it always fits exactly.
-async function fitImageToBanner(file) {
-  const W = 1500, H = 500;
-  const dataUrl = await readFileAsDataURL(file);
-  const img = new Image();
-  await new Promise((resolve, reject) => {
-    img.onload = resolve;
-    img.onerror = () => reject(new Error("Could not read that image."));
-    img.src = dataUrl;
-  });
-  const scale = Math.max(W / img.width, H / img.height);
-  const dw = img.width * scale, dh = img.height * scale;
-  const canvas = document.createElement("canvas");
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  return canvas.toDataURL("image/jpeg", 0.88);
 }
 
 /* =========================================================
