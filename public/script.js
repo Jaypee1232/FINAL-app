@@ -71,6 +71,7 @@ function applyStaticIcons(root = document) {
 ========================================================= */
 
 async function uploadMedia(dataUrl, kind = "image") {
+  if (isOffline()) throw new Error("You are offline. Connect to the internet to upload photos, videos and GIFs.");
   const result = await api("/api/upload", { method: "POST", body: { dataUrl, kind } });
   return result.url;
 }
@@ -132,13 +133,119 @@ const MAX_VIDEO_BYTES = 15 * 1024 * 1024;
    API
 ========================================================= */
 
+/* ---------- OFFLINE MODE ----------
+   - The last feed + your login are kept on this device, so the app still opens and you can
+     read everything you already loaded while offline.
+   - Text changes (comments, reactions, posts without new uploads, edits) are kept on the
+     device and sent automatically the moment you are back online.
+   - Photos / videos / GIF uploads need a connection (they go to Cloudinary).
+   - A red "You are offline" bar shows at the top whenever there is no connection. */
+const OFFLINE_STATE_KEY = "nbh_offline_state_v1";
+const OFFLINE_SESSION_KEY = "nbh_offline_session_v1";
+const OFFLINE_DIRTY_KEY = "nbh_offline_dirty_v1";
+let netOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+let pendingSync = false;   // changes made offline that haven't reached the server yet
+let netProbeTimer = null;
+
+function isOffline() { return netOffline; }
+
+function offlineWrite(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+}
+function offlineRead(key) {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function offlineClearAll() {
+  try { [OFFLINE_STATE_KEY, OFFLINE_SESSION_KEY, OFFLINE_DIRTY_KEY].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+  pendingSync = false;
+}
+function offlineCacheState() {
+  if (!session || !session.username) return;
+  offlineWrite(OFFLINE_STATE_KEY, { owner: session.username, data });
+}
+
+function ensureNetBanner() {
+  let el = document.getElementById("netBanner");
+  if (el || !document.body) return el;
+  el = document.createElement("div");
+  el.id = "netBanner";
+  el.className = "net-banner";
+  el.setAttribute("role", "status");
+  el.setAttribute("aria-live", "polite");
+  el.innerHTML = '<span class="net-dot"></span><span class="net-text"><b>You are offline</b><small></small></span>';
+  document.body.appendChild(el);
+  return el;
+}
+
+function updateNetBanner() {
+  const el = ensureNetBanner();
+  document.documentElement.classList.toggle("is-offline", netOffline);
+  if (!el) return;
+  const sub = el.querySelector("small");
+  if (sub) {
+    sub.textContent = pendingSync
+      ? "Your changes are saved on this device and will sync when you reconnect."
+      : "You can still read what's already loaded. New activity appears when you reconnect.";
+  }
+  el.classList.toggle("show", netOffline);
+}
+
+async function probeConnection() {
+  try {
+    await fetch("/api/auth/me", { credentials: "include", cache: "no-store" });
+    setOffline(false);
+  } catch (e) { /* still offline */ }
+}
+
+function setOffline(value) {
+  value = !!value;
+  if (value === netOffline) return;
+  netOffline = value;
+  updateNetBanner();
+  if (netOffline) {
+    clearInterval(netProbeTimer);
+    netProbeTimer = setInterval(probeConnection, 5000);
+  } else {
+    clearInterval(netProbeTimer);
+    netProbeTimer = null;
+    showMessage(pendingSync ? "Back online — syncing your changes…" : "Back online");
+    syncAfterReconnect();
+  }
+}
+
+async function syncAfterReconnect() {
+  if (!session) return;
+  if (pendingSync) {
+    pendingSync = false;
+    offlineWrite(OFFLINE_DIRTY_KEY, false);
+    saveData();
+    try { await saveChain; } catch (e) {}
+    updateNetBanner();
+  }
+  if (!pendingSync && typeof refreshFeed === "function") refreshFeed({ quiet: true });
+}
+
+window.addEventListener("offline", () => setOffline(true));
+window.addEventListener("online", () => { probeConnection(); });
+if (document.body) updateNetBanner(); else window.addEventListener("DOMContentLoaded", updateNetBanner);
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    method: options.method || "GET",
-    headers: options.body ? { "Content-Type": "application/json" } : undefined,
-    credentials: "include",
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method: options.method || "GET",
+      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      credentials: "include",
+      body: options.body ? JSON.stringify(options.body) : undefined
+    });
+  } catch (networkError) {
+    // fetch() only throws when the request never reached the server.
+    setOffline(true);
+    const failure = new Error("You are offline.");
+    failure.offline = true;
+    throw failure;
+  }
+  if (netOffline) setOffline(false);
 
   let payload = null;
   try {
@@ -153,6 +260,13 @@ async function api(path, options = {}) {
     failure.status = response.status;
     failure.payload = payload;
     throw failure;
+  }
+  // Keep a copy of the login and the latest feed so the app can open offline.
+  if (!options.method || options.method === "GET") {
+    if (path === "/api/auth/me" && payload) offlineWrite(OFFLINE_SESSION_KEY, payload);
+    else if (path === "/api/state" && payload && session && !pendingSync) {
+      offlineWrite(OFFLINE_STATE_KEY, { owner: session.username, data: payload });
+    }
   }
   return payload;
 }
@@ -224,6 +338,7 @@ async function attemptSave(retriesLeft) {
     const result = await api("/api/state", { method: "POST", body: data });
     lastSaveOk = true;
     if (result && typeof result.rev === "number") data.rev = result.rev;
+    if (savesInFlight === 1) { offlineCacheState(); offlineWrite(OFFLINE_DIRTY_KEY, false); }
     // Adopt the server's true reaction/share totals (only when no newer save is queued).
     if (result && Array.isArray(result.posts) && savesInFlight === 1) {
       let changed = false;
@@ -246,6 +361,16 @@ async function attemptSave(retriesLeft) {
       data.deletedPostIds = data.deletedPostIds.filter(id => !sentDeletes.includes(id));
     }
   } catch (error) {
+    if (error.offline) {
+      // No connection: keep the change on this device and send it when we're back online.
+      pendingSync = true;
+      lastSaveOk = true;
+      offlineCacheState();
+      offlineWrite(OFFLINE_DIRTY_KEY, true);
+      updateNetBanner();
+      showMessage("Saved on this device — it will sync when you're back online.");
+      return;
+    }
     const freshState = error.status === 409 && error.payload && error.payload.state;
     if (freshState && typeof freshState.rev === "number" && retriesLeft > 0) {
       // Someone else saved first (even just another member logging in bumps
@@ -302,7 +427,7 @@ function refreshAfterSync() {
 }
 
 async function pollState() {
-  if (!session || anyModalOpen() || savesInFlight > 0) return;
+  if (!session || anyModalOpen() || savesInFlight > 0 || netOffline || pendingSync) return;
   try {
     const fresh = await api("/api/state");
     if (savesInFlight > 0) return; // a save started while we were fetching; don't overwrite it
@@ -564,9 +689,38 @@ if (loginForm) {
 ========================================================= */
 
 async function loadStateAndEnter() {
+  // Changes made offline in an earlier visit: re-send them first (the server merges them safely).
+  const saved = offlineRead(OFFLINE_DIRTY_KEY) ? offlineRead(OFFLINE_STATE_KEY) : null;
+  if (saved && saved.data && session && saved.owner === session.username) {
+    data = saved.data;
+    upgradeData();
+    enterApplication();
+    offlineWrite(OFFLINE_DIRTY_KEY, false);
+    showMessage("Syncing your offline changes…");
+    saveData();
+    saveChain.then(() => { if (!pendingSync) refreshFeed({ quiet: true }); });
+    return;
+  }
   data = await api("/api/state");
   upgradeData();
   enterApplication();
+}
+
+// No connection at startup: open the app from the copy saved on this device.
+function enterOfflineFromCache() {
+  const cachedSession = offlineRead(OFFLINE_SESSION_KEY);
+  const cached = offlineRead(OFFLINE_STATE_KEY);
+  if (!cachedSession || !cached || !cached.data || cached.owner !== cachedSession.username) return false;
+  if (cachedSession.logoutOnExit && !tabWasAlive()) return false;
+  session = cachedSession;
+  data = cached.data;
+  pendingSync = !!offlineRead(OFFLINE_DIRTY_KEY);
+  upgradeData();
+  markTabAlive();
+  enterApplication();
+  updateNetBanner();
+  showMessage("You are offline — showing your saved feed.");
+  return true;
 }
 
 function enterApplication() {
@@ -824,6 +978,8 @@ async function logout(options = {}) {
   }
 
   session = null;
+  offlineClearAll();
+  updateNetBanner();
   data = { users: [], posts: [], social: {} };
 
   activePostId = null;
@@ -935,7 +1091,7 @@ if (avatarInput) {
       return;
     }
     try {
-      await openAvatarEditor(file);
+      await openAvatarEditor(file, "avatar");
     } catch (error) {
       console.error(error);
       showMessage("Couldn't open that image.");
@@ -947,27 +1103,32 @@ if (avatarInput) {
    PROFILE PICTURE EDITOR — move, zoom and rotate the photo
    inside a round frame before it is saved.
 --------------------------------------------------------- */
-const AE = { img: null, rot: 0, zoom: 1, x: 0, y: 0, S: 600, saving: false, pointers: new Map(), pinch: 0 };
+const AE = { img: null, rot: 0, zoom: 1, x: 0, y: 0, W: 600, H: 600, mode: "avatar", saving: false, pointers: new Map(), pinch: 0 };
+const AE_MODES = {
+  avatar: { W: 600, H: 600, outW: 500, outH: 500, title: "Edit Profile Picture", done: "Profile picture updated!" },
+  banner: { W: 900, H: 300, outW: 1500, outH: 500, title: "Adjust Cover Photo", done: "Cover photo updated!" }
+};
 
 function aeCanvas() { return document.getElementById("avatarCropCanvas"); }
 function aeDims() {
   const turned = AE.rot % 2 === 1;
   return { w: turned ? AE.img.height : AE.img.width, h: turned ? AE.img.width : AE.img.height };
 }
-function aeScale() { const d = aeDims(); return (AE.S / Math.min(d.w, d.h)) * AE.zoom; }
+// "Cover" fit: the photo always fills the whole frame (no empty bars); zoom only goes in from there.
+function aeScale() { const d = aeDims(); return Math.max(AE.W / d.w, AE.H / d.h) * AE.zoom; }
 function aeClamp() {
   const d = aeDims(), sc = aeScale();
-  const maxX = Math.max(0, (d.w * sc - AE.S) / 2);
-  const maxY = Math.max(0, (d.h * sc - AE.S) / 2);
+  const maxX = Math.max(0, (d.w * sc - AE.W) / 2);
+  const maxY = Math.max(0, (d.h * sc - AE.H) / 2);
   AE.x = Math.min(maxX, Math.max(-maxX, AE.x));
   AE.y = Math.min(maxY, Math.max(-maxY, AE.y));
 }
-function aeRender(ctx, size) {
-  const k = size / AE.S;
+function aeRender(ctx, outW) {
+  const k = outW / AE.W;
   ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, size, size);
+  ctx.fillRect(0, 0, AE.W * k, AE.H * k);
   ctx.save();
-  ctx.translate(size / 2 + AE.x * k, size / 2 + AE.y * k);
+  ctx.translate(AE.W * k / 2 + AE.x * k, AE.H * k / 2 + AE.y * k);
   ctx.scale(aeScale() * k, aeScale() * k);
   ctx.rotate(AE.rot * Math.PI / 2);
   ctx.drawImage(AE.img, -AE.img.width / 2, -AE.img.height / 2);
@@ -977,7 +1138,7 @@ function aeDraw() {
   const c = aeCanvas();
   if (!c || !AE.img) return;
   aeClamp();
-  aeRender(c.getContext("2d"), AE.S);
+  aeRender(c.getContext("2d"), AE.W);
 }
 function aeSetZoom(z) {
   AE.zoom = Math.min(4, Math.max(1, z));
@@ -986,7 +1147,8 @@ function aeSetZoom(z) {
   aeDraw();
 }
 
-async function openAvatarEditor(file) {
+async function openAvatarEditor(file, mode) {
+  mode = AE_MODES[mode] ? mode : "avatar";
   const dataUrl = await readFileAsDataURL(file);
   const img = new Image();
   await new Promise((resolve, reject) => {
@@ -994,16 +1156,27 @@ async function openAvatarEditor(file) {
     img.onerror = () => reject(new Error("Could not read that image."));
     img.src = dataUrl;
   });
+  const cfg = AE_MODES[mode];
   AE.img = img; AE.rot = 0; AE.zoom = 1; AE.x = 0; AE.y = 0; AE.saving = false;
+  AE.mode = mode; AE.W = cfg.W; AE.H = cfg.H;
   AE.pointers.clear(); AE.pinch = 0;
   const c = aeCanvas();
-  c.width = AE.S; c.height = AE.S;
+  c.width = AE.W; c.height = AE.H;
+  const frame = document.getElementById("avatarCrop");
+  if (frame) frame.classList.toggle("banner", mode === "banner");
+  const title = document.getElementById("avatarEditTitle");
+  if (title) title.textContent = cfg.title;
   const slider = document.getElementById("avatarZoom");
   if (slider) slider.value = "1";
   const btn = document.getElementById("avatarSaveBtn");
   if (btn) { btn.disabled = false; btn.textContent = "Save"; }
   document.getElementById("avatarEditModal")?.classList.remove("hidden");
   aeDraw();
+}
+
+// "Choose another" inside the editor keeps whichever mode (profile picture / cover) is open.
+function aeChooseAnother() {
+  document.getElementById(AE.mode === "banner" ? "bannerInput" : "avatarInput")?.click();
 }
 
 function cancelAvatarEdit() {
@@ -1027,21 +1200,23 @@ async function saveAvatarEdit() {
   if (!AE.img || AE.saving) return;
   const user = currentUser();
   if (!user) return;
+  if (isOffline()) { showMessage("You are offline. Connect to the internet to change your photo."); return; }
   AE.saving = true;
+  const cfg = AE_MODES[AE.mode];
   const btn = document.getElementById("avatarSaveBtn");
   if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
   try {
     const out = document.createElement("canvas");
-    out.width = 500; out.height = 500;
+    out.width = cfg.outW; out.height = cfg.outH;
     aeClamp();
-    aeRender(out.getContext("2d"), 500);
+    aeRender(out.getContext("2d"), cfg.outW);
     const url = await uploadMedia(out.toDataURL("image/jpeg", 0.88), "image");
-    user.avatarImage = url;
+    if (AE.mode === "banner") user.bannerImage = url; else user.avatarImage = url;
     if (saveData()) {
       AE.saving = false;
       cancelAvatarEdit();
       renderEverything();
-      showMessage("Profile picture updated!");
+      showMessage(cfg.done);
     } else {
       AE.saving = false;
       if (btn) { btn.disabled = false; btn.textContent = "Save"; }
@@ -1050,7 +1225,7 @@ async function saveAvatarEdit() {
     console.error(error);
     AE.saving = false;
     if (btn) { btn.disabled = false; btn.textContent = "Save"; }
-    showMessage("Couldn't update your profile picture.");
+    showMessage((error && error.message) || "Couldn't save that photo.");
   }
 }
 
@@ -1058,7 +1233,7 @@ async function saveAvatarEdit() {
   const frame = document.getElementById("avatarCrop");
   const slider = document.getElementById("avatarZoom");
   if (!frame) return;
-  const toCanvasUnits = () => AE.S / frame.getBoundingClientRect().width;
+  const toCanvasUnits = () => AE.W / frame.getBoundingClientRect().width;
   const pinchDist = () => {
     const pts = [...AE.pointers.values()];
     return pts.length < 2 ? 0 : Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
@@ -1113,20 +1288,11 @@ if (bannerInput) {
       showMessage("Please choose an image file.");
       return;
     }
-    showMessage("Updating cover photo…");
     try {
-      const dataUrl = await compressImageFile(file, 1600, 0.85);
-      const url = await uploadMedia(dataUrl, "image");
-      const user = currentUser();
-      if (!user) return;
-      user.bannerImage = url;
-      if (saveData()) {
-        applyProfileCover(user);
-        showMessage("Cover photo updated!");
-      }
+      await openAvatarEditor(file, "banner");
     } catch (error) {
       console.error(error);
-      showMessage("Couldn't update your cover photo.");
+      showMessage("Couldn't open that image.");
     }
   });
 }
@@ -1436,7 +1602,9 @@ function renderCommentsList(keepScroll) {
       <div class="comment-body">
         <strong>${escapeHTML(comment.name)}</strong>
         ${comment.text ? `<span>${richTextHTML(comment.text)}</span>` : ""}
-        ${comment.image ? `<img class="comment-image" src="${escapeHTML(comment.image)}" alt="Photo in comment" loading="lazy">` : ""}
+        ${comment.sticker ? `<div class="comment-sticker" role="img" aria-label="Sticker">${escapeHTML(comment.sticker)}</div>` : ""}
+        ${comment.image ? `<img class="comment-image" src="${escapeHTML(comment.image)}" alt="Photo or GIF in comment" loading="lazy">` : ""}
+        ${comment.music && comment.music.previewUrl ? musicBarHTML(comment.music, false) : ""}
         <small title="${escapeHTML(fullStamp(comment.createdAt))}">${escapeHTML(formatStamp(comment.createdAt, comment.time))}</small>
         ${likeBtn}
       </div>
@@ -1467,20 +1635,34 @@ function deleteComment(postId, commentId) {
    COMMENT FORM
 ========================================================= */
 
-let commentPhotoDataUrl = null;
+let commentPhotoDataUrl = null;   // a photo/GIF picked from the device (uploaded when you press Post)
+let commentGifUrl = null;         // a GIF picked from the GIF search (already hosted, nothing to upload)
+let commentSticker = null;        // a big emoji sticker
+let commentMusic = null;          // a 30-second song preview
+
+const COMMENT_STICKERS = [
+  "😀","😂","🤣","😍","🥰","😘","😎","🤩","🥳","😭","😢","😡","😱","🤔","🙄","😴","🤗","😇","🤪","😜",
+  "👍","👎","👏","🙌","🙏","💪","👀","🔥","💯","✨","🎉","🎂","🎁","💖","💔","❤️","🧡","💛","💚","💙",
+  "💜","🌹","🌈","☀️","🌙","⭐","🐴","🐶","🐱","🦄","🍕","🍔","🍰","☕","🎶","🎵","🚀","💩","🤝","🫶"
+];
 
 function showCommentPhotoPreview() {
   const box = document.getElementById("commentPhotoPreview");
   if (!box) return;
-  if (!commentPhotoDataUrl) { box.classList.add("hidden"); box.innerHTML = ""; return; }
-  box.innerHTML = `<img src="${commentPhotoDataUrl}" alt="Selected photo"><button type="button" aria-label="Remove photo" onclick="clearCommentPhoto()">&times;</button>`;
+  const parts = [];
+  const photoSrc = commentPhotoDataUrl || commentGifUrl;
+  if (photoSrc) parts.push(`<div class="cp-item"><img src="${escAttr(photoSrc)}" alt="Selected photo or GIF"><button type="button" aria-label="Remove photo" onclick="clearCommentPhoto()">&times;</button></div>`);
+  if (commentSticker) parts.push(`<div class="cp-item cp-sticker">${escapeHTML(commentSticker)}<button type="button" aria-label="Remove sticker" onclick="clearCommentSticker()">&times;</button></div>`);
+  if (commentMusic) parts.push(musicBarHTML(commentMusic, "comment"));
+  if (!parts.length) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+  box.innerHTML = parts.join("");
   box.classList.remove("hidden");
 }
 
-function clearCommentPhoto() {
-  commentPhotoDataUrl = null;
-  showCommentPhotoPreview();
-}
+function clearCommentPhoto() { commentPhotoDataUrl = null; commentGifUrl = null; showCommentPhotoPreview(); }
+function clearCommentSticker() { commentSticker = null; showCommentPhotoPreview(); }
+function clearCommentMusic() { commentMusic = null; stopPreview(false); showCommentPhotoPreview(); }
+function clearCommentAttachments() { commentPhotoDataUrl = null; commentGifUrl = null; commentSticker = null; commentMusic = null; showCommentPhotoPreview(); }
 
 const commentPhotoInput = document.getElementById("commentPhotoInput");
 if (commentPhotoInput) {
@@ -1491,9 +1673,102 @@ if (commentPhotoInput) {
     if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { showMessage("Please choose a PNG, JPG, GIF or WebP image."); return; }
     if (file.size > 8 * 1024 * 1024) { showMessage("That image is too large (max 8MB)."); return; }
     const reader = new FileReader();
-    reader.onload = () => { commentPhotoDataUrl = reader.result; showCommentPhotoPreview(); };
+    reader.onload = () => { commentGifUrl = null; commentSticker = null; commentPhotoDataUrl = reader.result; showCommentPhotoPreview(); };
     reader.readAsDataURL(file);
   });
+}
+
+function addCommentMusic() {
+  if (isOffline()) { showMessage("You are offline. Music search needs a connection."); return; }
+  addMusic(track => { commentMusic = track; showCommentPhotoPreview(); });
+}
+
+/* ---- GIF + sticker picker for comments ---- */
+function openCommentPicker(startTab) {
+  if (document.querySelector(".mp-overlay.cp-overlay")) return;
+  const ov = document.createElement("div");
+  ov.className = "mp-overlay cp-overlay";
+  ov.innerHTML = `
+    <div class="mp-box">
+      <div class="pe-top">
+        <button type="button" data-a="close" aria-label="Close">×</button>
+        <strong>Stickers &amp; GIFs</strong>
+        <span></span>
+      </div>
+      <div class="cp-tabs">
+        <button type="button" data-tab="stickers">Stickers</button>
+        <button type="button" data-tab="gifs">GIFs</button>
+      </div>
+      <input class="mp-search cp-search" type="search" placeholder="Search GIFs" autocomplete="off" autocapitalize="off">
+      <div class="mp-list cp-body"></div>
+    </div>`;
+  document.body.appendChild(ov);
+  const body = ov.querySelector(".cp-body");
+  const search = ov.querySelector(".cp-search");
+  const tabs = ov.querySelectorAll("[data-tab]");
+  let tab = "stickers", token = 0, timer = null, gifs = [];
+
+  const close = () => ov.remove();
+
+  function drawStickers() {
+    search.classList.add("hidden");
+    body.className = "mp-list cp-body cp-sticker-grid";
+    body.innerHTML = COMMENT_STICKERS.map(e => `<button type="button" class="cp-sticker-btn" data-sticker="${escAttr(e)}" aria-label="Sticker ${escAttr(e)}">${escapeHTML(e)}</button>`).join("");
+  }
+
+  async function drawGifs() {
+    search.classList.remove("hidden");
+    body.className = "mp-list cp-body";
+    if (isOffline()) { body.innerHTML = `<p class="mp-empty">You are offline. GIFs need a connection.</p>`; return; }
+    const mine = ++token;
+    const q = search.value.trim();
+    body.innerHTML = `<p class="mp-empty">Loading…</p>`;
+    try {
+      const res = await api("/api/gifs/search?q=" + encodeURIComponent(q));
+      if (mine !== token) return;
+      if (res && res.configured === false) {
+        search.classList.add("hidden");
+        body.innerHTML = `<p class="mp-empty">GIF search isn't switched on for this site yet.<br>You can still add a GIF from your device:</p>
+          <p style="text-align:center"><button type="button" class="soft-button" data-a="device">Choose a GIF from my device</button></p>`;
+        return;
+      }
+      gifs = (res && res.results) || [];
+      if (!gifs.length) { body.innerHTML = `<p class="mp-empty">No GIFs found. Try another search.</p>`; return; }
+      body.className = "mp-list cp-body cp-gif-grid";
+      body.innerHTML = gifs.map((g, i) => `<button type="button" class="cp-gif-btn" data-gif="${i}"><img src="${escAttr(g.preview)}" alt="${escAttr(g.title || "GIF")}" loading="lazy"></button>`).join("") +
+        `<p class="cp-credit">Powered by GIPHY</p>`;
+    } catch (err) {
+      if (mine !== token) return;
+      body.innerHTML = `<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't load GIFs.")}</p>`;
+    }
+  }
+
+  function setTab(next) {
+    tab = next;
+    tabs.forEach(t => t.classList.toggle("on", t.dataset.tab === tab));
+    if (tab === "stickers") drawStickers(); else drawGifs();
+  }
+
+  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(drawGifs, 400); });
+  ov.addEventListener("click", event => {
+    const t = event.target.closest("button");
+    if (!t) return;
+    if (t.dataset.a === "close") return close();
+    if (t.dataset.a === "device") { close(); document.getElementById("commentPhotoInput")?.click(); return; }
+    if (t.dataset.tab) return setTab(t.dataset.tab);
+    if (t.dataset.sticker) {
+      commentSticker = t.dataset.sticker; commentPhotoDataUrl = null; commentGifUrl = null;
+      close(); showCommentPhotoPreview(); document.getElementById("commentInput")?.focus();
+      return;
+    }
+    if (t.dataset.gif != null) {
+      const g = gifs[Number(t.dataset.gif)];
+      if (!g) return;
+      commentGifUrl = g.url; commentPhotoDataUrl = null; commentSticker = null;
+      close(); showCommentPhotoPreview(); document.getElementById("commentInput")?.focus();
+    }
+  });
+  setTab(startTab === "gifs" ? "gifs" : "stickers");
 }
 
 const commentForm = document.getElementById("commentForm");
@@ -1503,12 +1778,12 @@ if (commentForm) {
     const input = document.getElementById("commentInput");
     const text = input.value.trim();
     const postId = activePostId;
-    if ((!text && !commentPhotoDataUrl) || !postId) return;
+    if ((!text && !commentPhotoDataUrl && !commentGifUrl && !commentSticker && !commentMusic) || !postId) return;
     const user = currentUser();
     if (!user) return;
     const submitBtn = commentForm.querySelector('button[type="submit"]');
 
-    let imageUrl = null;
+    let imageUrl = commentGifUrl || null;
     if (commentPhotoDataUrl) {
       try {
         if (submitBtn) submitBtn.disabled = true;
@@ -1531,6 +1806,8 @@ if (commentForm) {
       avatarImage: user.avatarImage || null,
       text: text,
       image: imageUrl,
+      sticker: commentSticker || null,
+      music: commentMusic ? { ...commentMusic } : null,
       time: "Just now",
       createdAt: Date.now()
     });
@@ -1538,7 +1815,8 @@ if (commentForm) {
 
     saveData();
     input.value = "";
-    clearCommentPhoto();
+    stopPreview(false);
+    clearCommentAttachments();
     renderCommentsList();
     renderFeed();
 
@@ -2093,7 +2371,7 @@ async function publishPost() {
   closeComposer();
   renderEverything();
   openPage("home");
-  showMessage("Your post is live and saved! ✨");
+  showMessage(pendingSync ? "Post saved on this device — it will go live when you're back online." : "Your post is live and saved! ✨");
 }
 
 /* =========================================================
@@ -2956,6 +3234,7 @@ function removePhotoFromAlbum(index) {
 
 function closeModal(id) {
   document.getElementById(id)?.classList.add("hidden");
+  if (id === "commentsModal" && typeof stopPreview === "function") stopPreview(false);
 }
 
 /* ---------------------------------------------------------
@@ -3118,6 +3397,7 @@ async function startup() {
     markTabAlive();
     await loadStateAndEnter();
   } catch (error) {
+    if (error && error.offline && enterOfflineFromCache()) return;
     session = null;
     showWelcome();
   }
@@ -3483,7 +3763,7 @@ function musicBarHTML(music, removable) {
       ${art}
       <div class="pm-info"><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
       <button type="button" class="pm-play" onclick="togglePostMusic(this)" aria-label="Play music">${playing ? "❚❚" : "▶"}</button>
-      ${removable ? `<button type="button" class="pm-x" onclick="removeComposerMusic()" aria-label="Remove music">×</button>` : ""}
+      ${removable ? `<button type="button" class="pm-x" onclick="${removable === "comment" ? "clearCommentMusic()" : "removeComposerMusic()"}" aria-label="Remove music">×</button>` : ""}
     </div>`;
 }
 
@@ -3505,7 +3785,7 @@ function removeComposerMusic() {
   renderMusicPreview();
 }
 
-function addMusic() {
+function addMusic(onUse) {
   const ov = document.createElement("div");
   ov.className = "mp-overlay";
   ov.innerHTML = `
@@ -3567,8 +3847,10 @@ function addMusic() {
     if (t.dataset.use != null) {
       const track = results[Number(t.dataset.use)];
       if (!track) return;
-      composerMusic = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: 0 };
+      const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: 0 };
       close();
+      if (typeof onUse === "function") { onUse(picked); return; }
+      composerMusic = picked;
       renderMusicPreview();
     }
   });
