@@ -413,6 +413,30 @@
   <input type="file" id="avatarInput" accept="image/*" hidden>
   <input type="file" id="bannerInput" accept="image/*" hidden>
 
+  <!-- ============ EDIT PROFILE PICTURE MODAL ============ -->
+  <div id="avatarEditModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Edit profile picture">
+    <div class="modal-box small">
+      <div class="modal-header">
+        <button onclick="cancelAvatarEdit()" aria-label="Close">×</button>
+        <strong>Edit Profile Picture</strong>
+        <button class="post-button" id="avatarSaveBtn" onclick="saveAvatarEdit()">Save</button>
+      </div>
+      <div class="avatar-crop" id="avatarCrop">
+        <canvas id="avatarCropCanvas" width="600" height="600"></canvas>
+        <div class="avatar-crop-ring"></div>
+      </div>
+      <p class="avatar-crop-hint">Drag to move · pinch or slide to zoom</p>
+      <div class="avatar-crop-controls">
+        <input type="range" id="avatarZoom" min="1" max="4" step="0.01" value="1" aria-label="Zoom">
+      </div>
+      <div class="avatar-crop-buttons">
+        <button type="button" class="soft-button" onclick="rotateAvatarEdit()">Rotate</button>
+        <button type="button" class="soft-button" onclick="resetAvatarEdit()">Reset</button>
+        <button type="button" class="soft-button" onclick="triggerAvatarUpload()">Choose another</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ EDIT PROFILE MODAL ============ -->
   <div id="editModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Edit profile">
     <div class="modal-box small">
