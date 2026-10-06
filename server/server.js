@@ -633,7 +633,7 @@ function sameJSON(a, b) {
 // Looser identity for a comment, used only to match the sender's copy against the
 // server's copy (ids / usernames may be missing on a stale client copy).
 function commentKey(c) {
-  return [c && c.name, c && c.text, c && c.time, c && c.image].map(v => String(v == null ? "" : v)).join("|");
+  return [c && c.name, c && c.text, c && c.time, c && c.image, c && c.sticker, c && c.music && c.music.id].map(v => String(v == null ? "" : v)).join("|");
 }
 
 function newCommentId() {
@@ -676,6 +676,63 @@ function sanitizeMusic(m) {
     start: Number.isFinite(start) ? Math.min(Math.max(start, 0), 25) : 0
   };
 }
+
+// Comment stickers: a fixed set of big emoji (so a "sticker" can never carry a link or other text).
+const COMMENT_STICKERS = new Set([
+  "😀","😂","🤣","😍","🥰","😘","😎","🤩","🥳","😭","😢","😡","😱","🤔","🙄","😴","🤗","😇","🤪","😜",
+  "👍","👎","👏","🙌","🙏","💪","👀","🔥","💯","✨","🎉","🎂","🎁","💖","💔","❤️","🧡","💛","💚","💙",
+  "💜","🌹","🌈","☀️","🌙","⭐","🐴","🐶","🐱","🦄","🍕","🍔","🍰","☕","🎶","🎵","🚀","💩","🤝","🫶"
+]);
+
+function sanitizeSticker(value) {
+  return typeof value === "string" && COMMENT_STICKERS.has(value) ? value : "";
+}
+
+// ---------------------------------------------------------
+// GIF / STICKER SEARCH (GIPHY). Needs GIPHY_API_KEY in the server environment;
+// without it the app simply shows its built-in emoji stickers and "upload a GIF".
+// ---------------------------------------------------------
+function isGiphyUrl(value) {
+  try {
+    const u = new URL(String(value));
+    return u.protocol === "https:" && (u.hostname === "giphy.com" || u.hostname.endsWith(".giphy.com"));
+  } catch (e) {
+    return false;
+  }
+}
+
+const gifHits = new Map(); // username -> [timestamps]
+app.get("/api/gifs/search", requireAuth, ah(async (req, res) => {
+  const key = process.env.GIPHY_API_KEY;
+  if (!key) return res.json({ configured: false, results: [] });
+  const type = req.query.type === "stickers" ? "stickers" : "gifs";
+  const q = String(req.query.q || "").trim().slice(0, 60);
+  const now = Date.now();
+  const hits = (gifHits.get(req.username) || []).filter(t => now - t < 60000);
+  if (hits.length >= 40) return res.status(429).json({ error: "Too many searches. Try again in a minute." });
+  hits.push(now);
+  gifHits.set(req.username, hits);
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const endpoint = q ? "search" : "trending";
+    const url = "https://api.giphy.com/v1/" + type + "/" + endpoint + "?api_key=" + encodeURIComponent(key) +
+      "&limit=24&rating=pg" + (q ? "&q=" + encodeURIComponent(q) : "");
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) throw new Error("GIF service returned " + r.status);
+    const json = await r.json();
+    const results = (json.data || []).map(g => {
+      const imgs = g.images || {};
+      const full = imgs.fixed_height || imgs.original || {};
+      const small = imgs.fixed_width_small || imgs.fixed_width || full;
+      return { id: String(g.id), title: clampString(g.title, 100), url: full.url, preview: small.url };
+    }).filter(g => isGiphyUrl(g.url) && isGiphyUrl(g.preview));
+    res.json({ configured: true, results });
+  } catch (err) {
+    res.status(502).json({ error: "Couldn't reach the GIF search. Try again." });
+  }
+}));
 
 // ---------------------------------------------------------
 // TAGS + @MENTIONS
@@ -805,9 +862,12 @@ function sanitizePost(incomingPost, currentPost, req, authorProfile, users) {
     text: clampString(c && c.text, MAX_COMMENT_LEN),
     // Optional photo/GIF: only accept links that came from our own upload endpoint.
     image: (c && typeof c.image === "string" && /^(https:\/\/|\/uploads\/)/.test(c.image)) ? clampString(c.image, 2000) : null,
+    // Optional sticker (fixed emoji list) and optional 30-second song preview.
+    sticker: sanitizeSticker(c && c.sticker) || null,
+    music: sanitizeMusic(c && c.music),
     time: "Just now",
     createdAt: Date.now()
-  })).filter(c => c.text.trim().length > 0 || c.image).slice(0, 20);
+  })).filter(c => c.text.trim().length > 0 || c.image || c.sticker || c.music).slice(0, 20);
   const finalComments = oldComments.concat(appended);
   base.commentsList = finalComments;
   base.comments = finalComments.length;
