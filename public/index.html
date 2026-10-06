@@ -423,7 +423,7 @@
     <div class="modal-box small">
       <div class="modal-header">
         <button onclick="cancelAvatarEdit()" aria-label="Close">×</button>
-        <strong>Edit Profile Picture</strong>
+        <strong id="avatarEditTitle">Edit Profile Picture</strong>
         <button class="post-button" id="avatarSaveBtn" onclick="saveAvatarEdit()">Save</button>
       </div>
       <div class="avatar-crop" id="avatarCrop">
@@ -437,7 +437,7 @@
       <div class="avatar-crop-buttons">
         <button type="button" class="soft-button" onclick="rotateAvatarEdit()">Rotate</button>
         <button type="button" class="soft-button" onclick="resetAvatarEdit()">Reset</button>
-        <button type="button" class="soft-button" onclick="triggerAvatarUpload()">Choose another</button>
+        <button type="button" class="soft-button" onclick="aeChooseAnother()">Choose another</button>
       </div>
     </div>
   </div>
@@ -547,6 +547,11 @@
       <div id="commentsList" class="comments-list"></div>
 
       <div id="commentPhotoPreview" class="comment-photo-preview hidden"></div>
+      <div class="comment-tools">
+        <button type="button" class="comment-gif-btn" onclick="openCommentPicker('gifs')" aria-label="Add a GIF">GIF</button>
+        <button type="button" onclick="openCommentPicker('stickers')" aria-label="Add a sticker">&#128578; Sticker</button>
+        <button type="button" onclick="addCommentMusic()" aria-label="Add music">&#9835; Music</button>
+      </div>
       <form id="commentForm" class="comment-form">
         <button type="button" id="commentPhotoBtn" class="comment-photo-btn" aria-label="Add a photo or GIF" onclick="document.getElementById('commentPhotoInput').click()">&#128247;</button>
         <input type="file" id="commentPhotoInput" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
