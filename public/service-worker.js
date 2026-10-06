@@ -11,7 +11,7 @@
      members get the new version instead of a stuck old one.
 ========================================================= */
 
-const CACHE_NAME = "nbh-shell-v17";
+const CACHE_NAME = "nbh-shell-v18";
 const SHELL_FILES = [
   "/",
   "/index.html",
