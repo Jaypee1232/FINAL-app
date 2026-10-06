@@ -329,20 +329,7 @@
     });
   }, { passive: true });
 
-  /* ---------- Offline banner ---------- */
-  var banner = document.createElement("div");
-  banner.className = "offline-banner";
-  banner.setAttribute("role", "status");
-  banner.textContent = "You're offline — new posts will load when you reconnect";
-  document.body.appendChild(banner);
-  function netState() { banner.classList.toggle("show", !navigator.onLine); }
-  window.addEventListener("offline", netState);
-  window.addEventListener("online", function () {
-    netState();
-    showMessage("Back online");
-    if (typeof refreshFeed === "function") refreshFeed({ quiet: true });
-  });
-  netState();
+  /* Offline banner + offline mode now live in script.js (setOffline / updateNetBanner). */
 
   /* ---------- Install app button ---------- */
   /* Always offered (Profile page) unless already running as an installed app.
