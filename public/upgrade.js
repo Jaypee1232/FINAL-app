@@ -356,17 +356,37 @@
     var ua = navigator.userAgent || "";
     var ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     var steps = ios
-      ? ["Open this site in <b>Safari</b>.", "Tap the <b>Share</b> button.", "Choose <b>Add to Home Screen</b>, then tap <b>Add</b>."]
+      ? ["Open this site in <b>Safari</b>", "Tap the <b>Share</b> button <span class=\"ih-ico\">\u2B06\uFE0E</span> at the bottom", "Scroll and choose <b>Add to Home Screen</b>", "Tap <b>Add</b> \u2014 done!"]
       : /Android/.test(ua)
-        ? ["Open the browser menu <b>\u22EE</b>.", "Tap <b>Install app</b> or <b>Add to Home screen</b>."]
-        : ["Click the install icon in the address bar, or open the browser menu and choose <b>Install Nea\u2019s Boarding Horse</b>."];
+        ? ["Open the browser menu <b>\u22EE</b>", "Tap <b>Install app</b> or <b>Add to Home screen</b>", "Confirm \u2014 done!"]
+        : ["Click the install icon in the address bar, or open the browser menu", "Choose <b>Install Nea\u2019s Boarding Horse</b>"];
+    if (!$("#installHelpStyle")) {
+      var st = document.createElement("style");
+      st.id = "installHelpStyle";
+      st.textContent =
+        "@keyframes ihIn{from{opacity:0;transform:translateY(24px) scale(.97)}to{opacity:1;transform:none}}" +
+        ".ih-back{position:fixed;inset:0;z-index:300;background:rgba(5,10,25,.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:20px}" +
+        ".ih-card{background:var(--surface,#fff);color:var(--text,#202632);border:1px solid var(--border,#e8e9ed);max-width:380px;width:100%;border-radius:24px;padding:26px 22px 20px;box-shadow:0 24px 60px rgba(0,0,0,.35);animation:ihIn .28s ease-out;text-align:center}" +
+        ".ih-logo{width:68px;height:68px;border-radius:18px;margin:0 auto 14px;display:block;box-shadow:0 6px 18px rgba(0,0,0,.25)}" +
+        ".ih-card h3{margin:0 0 4px;font-size:1.25rem;color:var(--text,#202632)}" +
+        ".ih-sub{margin:0 0 18px;color:var(--muted,#7b818b);font-size:.92rem}" +
+        ".ih-steps{list-style:none;counter-reset:s;padding:0;margin:0 0 20px;text-align:left}" +
+        ".ih-steps li{counter-increment:s;display:flex;align-items:center;gap:12px;padding:11px 12px;margin-bottom:8px;border-radius:14px;background:var(--surface-alt,#f2f3f6);color:var(--text,#202632);line-height:1.35;font-size:.95rem}" +
+        ".ih-steps li:before{content:counter(s);flex:none;width:28px;height:28px;border-radius:50%;background:var(--pink,#df5684);color:#fff;font-weight:700;font-size:.85rem;display:flex;align-items:center;justify-content:center}" +
+        ".ih-ico{display:inline-block;padding:0 5px;border-radius:6px;background:var(--border,#e8e9ed)}" +
+        ".ih-ok{width:100%;border:0;border-radius:14px;padding:14px;font:inherit;font-weight:700;font-size:1rem;color:#fff;background:var(--pink,#df5684);cursor:pointer}" +
+        ".ih-ok:active{transform:scale(.98)}";
+      document.head.appendChild(st);
+    }
     var o = document.createElement("div");
-    o.style.cssText = "position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px";
-    o.innerHTML = '<div role="dialog" aria-modal="true" style="background:var(--card,#fff);color:var(--text,#111);max-width:360px;width:100%;border-radius:16px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)">' +
-      '<h3 style="margin:0 0 10px">Install the app</h3><ol style="padding-left:20px;margin:0 0 16px;line-height:1.6">' +
-      steps.map(function (t) { return "<li>" + t + "</li>"; }).join("") +
-      '</ol><button type="button" class="soft-button" style="width:100%">Got it</button></div>';
-    o.onclick = function (e) { if (e.target === o || e.target.tagName === "BUTTON") o.remove(); };
+    o.className = "ih-back";
+    o.innerHTML = '<div class="ih-card" role="dialog" aria-modal="true" aria-label="Install the app">' +
+      '<img class="ih-logo" src="/icons/icon-192.png" alt="">' +
+      '<h3>Install Nea\u2019s Boarding Horse</h3>' +
+      '<p class="ih-sub">Get it on your home screen like a real app.</p>' +
+      '<ol class="ih-steps">' + steps.map(function (t) { return "<li><span>" + t + "</span></li>"; }).join("") + '</ol>' +
+      '<button type="button" class="ih-ok">Got it</button></div>';
+    o.onclick = function (e) { if (e.target === o || (e.target.classList && e.target.classList.contains("ih-ok"))) o.remove(); };
     document.body.appendChild(o);
   }
 
