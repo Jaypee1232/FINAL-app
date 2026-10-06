@@ -1184,6 +1184,12 @@ function cancelAvatarEdit() {
   document.getElementById("avatarEditModal")?.classList.add("hidden");
   AE.img = null;
 }
+// Puts the photo back in the middle of the frame (keeps the current zoom and rotation).
+function centerAvatarEdit() {
+  if (!AE.img) return;
+  AE.x = 0; AE.y = 0;
+  aeDraw();
+}
 function rotateAvatarEdit() {
   if (!AE.img) return;
   AE.rot = (AE.rot + 1) % 4;
