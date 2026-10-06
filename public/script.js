@@ -2103,8 +2103,8 @@ async function publishPost() {
    accept/decline, or remove flow anymore.)
 ========================================================= */
 
-// A member counts as "new" for 14 days after the admin creates their account.
-const NEW_MEMBER_DAYS = 14;
+// A member counts as "new" for 1 day after the admin creates their account.
+const NEW_MEMBER_DAYS = 1;
 function isNewMember(member) {
   const joined = Number(member && member.joinedAt) || 0;
   return joined > 0 && (Date.now() - joined) < NEW_MEMBER_DAYS * 24 * 60 * 60 * 1000;
