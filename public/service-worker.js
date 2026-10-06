@@ -11,12 +11,14 @@
      members get the new version instead of a stuck old one.
 ========================================================= */
 
-const CACHE_NAME = "nbh-shell-v13";
+const CACHE_NAME = "nbh-shell-v14";
 const SHELL_FILES = [
   "/",
   "/index.html",
   "/style.css",
   "/theme.css",
+  "/upgrade.css",
+  "/upgrade.js",
   "/script.js",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
@@ -35,7 +37,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((names) =>
       Promise.all(
         names
-          .filter((name) => name !== CACHE_NAME)
+          .filter((name) => name !== CACHE_NAME && name !== "nbh-images-v1")
           .map((name) => caches.delete(name))
       )
     )
@@ -48,6 +50,19 @@ self.addEventListener("fetch", (event) => {
 
   // Never touch API calls — always live, never cached.
   if (url.pathname.startsWith("/api/")) return;
+
+  // Cloudinary photos: show the saved copy instantly, refresh it in the background.
+  if (event.request.method === "GET" && url.hostname === "res.cloudinary.com" && event.request.destination === "image") {
+    event.respondWith(
+      caches.open("nbh-images-v1").then((cache) =>
+        cache.match(event.request).then((hit) => {
+          const net = fetch(event.request).then((res) => { if (res && (res.ok || res.type === "opaque")) cache.put(event.request, res.clone()); return res; }).catch(() => hit);
+          return hit || net;
+        })
+      )
+    );
+    return;
+  }
 
   // Only handle same-origin GET requests; let everything else
   // (Cloudinary images/videos, cross-origin, POST, etc.) pass through untouched.
