@@ -209,6 +209,7 @@ function ensureSocialFor(username) {
 // Saves run one at a time so they always reach the server in order.
 let saveChain = Promise.resolve();
 let savesInFlight = 0;
+let lastSaveOk = true; // did the most recent save reach the server? (publishPost waits on this)
 
 function saveData() {
   savesInFlight++;
@@ -221,6 +222,7 @@ async function attemptSave(retriesLeft) {
     const sentDeletes = Array.isArray(data.deletedPostIds) ? data.deletedPostIds.slice() : [];
     const sentCommentDeletes = Array.isArray(data.deletedComments) ? data.deletedComments.slice() : [];
     const result = await api("/api/state", { method: "POST", body: data });
+    lastSaveOk = true;
     if (result && typeof result.rev === "number") data.rev = result.rev;
     // Adopt the server's true reaction/share totals (only when no newer save is queued).
     if (result && Array.isArray(result.posts) && savesInFlight === 1) {
@@ -258,9 +260,11 @@ async function attemptSave(retriesLeft) {
     if (freshState) {
       // Repeated conflicts — fall back to at least showing the freshest feed.
       data = freshState;
+      lastSaveOk = false;
       renderEverything();
       showMessage("Couldn't save your last change. Please try again.");
     } else {
+      lastSaveOk = false;
       console.error("Could not save data to the server.", error);
       showMessage("Couldn't save — check your connection and try again.");
     }
@@ -1826,7 +1830,25 @@ function openComposer() {
   document.getElementById("postText")?.focus();
 }
 
+/* Loading state while posting: photos/videos still uploading, and the post itself being saved. */
+let composerPending = 0;   // photos/videos still uploading
+let composerGen = 0;       // bumps when the composer closes so late uploads are ignored
+let postingNow = false;
+
+function updateComposerBusy() {
+  const btn = document.getElementById("publishButton");
+  if (btn) {
+    btn.disabled = postingNow || composerPending > 0;
+    btn.textContent = postingNow ? "Posting…" : (composerPending > 0 ? "Uploading…" : "Post");
+  }
+  document.getElementById("postingOverlay")?.classList.toggle("hidden", !postingNow);
+}
+
 function closeComposer() {
+  if (postingNow) return; // don't close while the post is being saved
+  composerGen++;
+  composerPending = 0;
+  updateComposerBusy();
   document.getElementById("composerModal")?.classList.add("hidden");
   const postText = document.getElementById("postText");
   if (postText) postText.value = "";
@@ -1867,6 +1889,8 @@ if (postPhotoInput) {
       showMessage("Please choose image files.");
       return;
     }
+    const gen = composerGen;
+    let started = 0;
     try {
       // Each photo opens in the editor first; uploads run in the background while you edit the next one.
       const uploads = [];
@@ -1880,16 +1904,26 @@ if (postPhotoInput) {
         }
         if (!edited) continue; // cancelled this photo
         showMessage("Adding photo…");
+        composerPending++; started++;
+        updateComposerBusy();
+        renderComposerPreview();
         uploads.push(uploadMedia(edited, "image"));
       }
       if (!uploads.length) return;
       const urls = await Promise.all(uploads);
-      composerImages.push(...urls);
-      composerVideo = null;
-      renderComposerPreview();
+      if (gen === composerGen) {
+        composerImages.push(...urls);
+        composerVideo = null;
+      }
     } catch (error) {
       console.error(error);
       showMessage((error && error.message) || "Couldn't add one of those photos.");
+    } finally {
+      if (gen === composerGen) {
+        composerPending = Math.max(0, composerPending - started);
+        updateComposerBusy();
+        renderComposerPreview();
+      }
     }
   });
 }
@@ -1913,15 +1947,26 @@ if (postVideoInput) {
       return;
     }
     showMessage("Adding video…");
+    const gen = composerGen;
+    composerPending++;
+    updateComposerBusy();
+    renderComposerPreview();
     try {
       const dataUrl = await readFileAsDataURL(file);
       const url = await uploadMedia(dataUrl, "video");
-      composerVideo = url;
-      composerImages = [];
-      renderComposerPreview();
+      if (gen === composerGen) {
+        composerVideo = url;
+        composerImages = [];
+      }
     } catch (error) {
       console.error(error);
       showMessage((error && error.message) || "Couldn't add that video.");
+    } finally {
+      if (gen === composerGen) {
+        composerPending = Math.max(0, composerPending - 1);
+        updateComposerBusy();
+        renderComposerPreview();
+      }
     }
   });
 }
@@ -1943,28 +1988,31 @@ function removeComposerVideo() {
 function renderComposerPreview() {
   const preview = document.getElementById("imagePreview");
   if (!preview) return;
+  const spinners = Array.from({ length: composerPending }, () =>
+    `<div class="preview-item preview-loading"><div class="spinner"></div></div>`).join("");
+  let items = "";
   if (composerVideo) {
-    preview.innerHTML = `
+    items = `
       <div class="preview-item">
         <video src="${escapeHTML(composerVideo)}" controls playsinline></video>
         <button type="button" class="remove-preview" onclick="removeComposerVideo()">×</button>
       </div>
     `;
-    preview.classList.remove("hidden");
-    return;
-  }
-  if (composerImages.length) {
-    preview.innerHTML = composerImages.map((src, index) => `
+  } else if (composerImages.length) {
+    items = composerImages.map((src, index) => `
       <div class="preview-item">
         <img src="${escapeHTML(src)}" alt="Selected photo">
         <button type="button" class="remove-preview" onclick="removeComposerImage(${index})">×</button>
       </div>
     `).join("");
-    preview.classList.remove("hidden");
+  }
+  if (!items && !spinners) {
+    preview.innerHTML = "";
+    preview.classList.add("hidden");
     return;
   }
-  preview.innerHTML = "";
-  preview.classList.add("hidden");
+  preview.innerHTML = items + spinners;
+  preview.classList.remove("hidden");
 }
 
 /* =========================================================
@@ -1983,7 +2031,12 @@ function createPoll() {
    PUBLISH POST
 ========================================================= */
 
-function publishPost() {
+async function publishPost() {
+  if (postingNow) return;
+  if (composerPending > 0) {
+    showMessage("Hang on — your photo/video is still uploading.");
+    return;
+  }
   const postText = document.getElementById("postText");
   const text = postText ? postText.value.trim() : "";
   if (!text && composerImages.length === 0 && !composerVideo) {
@@ -2016,9 +2069,17 @@ function publishPost() {
   if (composerMusic) newPost.music = { ...composerMusic };
   if (composerTags.length) newPost.tags = composerTags.slice();
   data.posts.unshift(newPost);
-  const saved = saveData();
-  if (!saved) {
-    data.posts.shift();
+  // Show the loading state until the server confirms the post is saved.
+  postingNow = true;
+  updateComposerBusy();
+  lastSaveOk = true;
+  saveData();
+  try { await saveChain; } catch (e) { lastSaveOk = false; }
+  postingNow = false;
+  updateComposerBusy();
+  if (!lastSaveOk) {
+    // Not saved: take it back out of the feed but keep the composer open so nothing typed is lost.
+    data.posts = data.posts.filter(p => p.id !== newPost.id);
     return;
   }
   if (postText) {
