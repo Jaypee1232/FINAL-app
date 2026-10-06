@@ -345,22 +345,76 @@
   netState();
 
   /* ---------- Install app button ---------- */
+  /* Always offered (Profile page) unless already running as an installed app.
+     Chrome/Edge/Android: native install prompt. iPhone/iPad Safari and other
+     browsers: a short how-to, since they have no install prompt. */
+  var isInstalled = window.matchMedia("(display-mode: standalone)").matches ||
+    window.navigator.standalone === true ||
+    !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+  function installHelp() {
+    var ua = navigator.userAgent || "";
+    var ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    var steps = ios
+      ? ["Open this site in <b>Safari</b>.", "Tap the <b>Share</b> button.", "Choose <b>Add to Home Screen</b>, then tap <b>Add</b>."]
+      : /Android/.test(ua)
+        ? ["Open the browser menu <b>\u22EE</b>.", "Tap <b>Install app</b> or <b>Add to Home screen</b>."]
+        : ["Click the install icon in the address bar, or open the browser menu and choose <b>Install Nea\u2019s Boarding Horse</b>."];
+    var o = document.createElement("div");
+    o.style.cssText = "position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px";
+    o.innerHTML = '<div role="dialog" aria-modal="true" style="background:var(--card,#fff);color:var(--text,#111);max-width:360px;width:100%;border-radius:16px;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.3)">' +
+      '<h3 style="margin:0 0 10px">Install the app</h3><ol style="padding-left:20px;margin:0 0 16px;line-height:1.6">' +
+      steps.map(function (t) { return "<li>" + t + "</li>"; }).join("") +
+      '</ol><button type="button" class="soft-button" style="width:100%">Got it</button></div>';
+    o.onclick = function (e) { if (e.target === o || e.target.tagName === "BUTTON") o.remove(); };
+    document.body.appendChild(o);
+  }
+
+  function doInstall() {
+    if (!installEvent) return installHelp();
+    installEvent.prompt();
+    installEvent.userChoice.then(function () { installEvent = null; });
+  }
+
+  function addInstallButton() {
+    if (isInstalled) return;
+    var actions = $("#profileActions");
+    if (actions && !$("#installBtn")) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.id = "installBtn";
+      b.className = "soft-button";
+      b.textContent = "Install app";
+      b.onclick = doInstall;
+      actions.insertBefore(b, actions.firstChild);
+    }
+    /* Header shortcut, handy on phones where the Profile page is a tap away */
+    var top = document.querySelector(".top-actions");
+    if (top && !$("#installTopBtn")) {
+      var t = document.createElement("button");
+      t.type = "button";
+      t.id = "installTopBtn";
+      t.className = "icon-button";
+      t.setAttribute("aria-label", "Install app");
+      t.title = "Install app";
+      t.innerHTML = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>';
+      t.onclick = doInstall;
+      top.insertBefore(t, top.firstChild);
+    }
+  }
+
   window.addEventListener("beforeinstallprompt", function (e) {
     e.preventDefault();
     installEvent = e;
-    var actions = $("#profileActions");
-    if (!actions || $("#installBtn")) return;
-    var b = document.createElement("button");
-    b.type = "button";
-    b.id = "installBtn";
-    b.className = "soft-button";
-    b.textContent = "Install app";
-    b.onclick = function () {
-      installEvent.prompt();
-      installEvent.userChoice.then(function () { installEvent = null; b.remove(); });
-    };
-    actions.insertBefore(b, actions.firstChild);
+    addInstallButton();
   });
+  window.addEventListener("appinstalled", function () {
+    installEvent = null;
+    ["#installBtn", "#installTopBtn"].forEach(function (id) { var x = $(id); if (x) x.remove(); });
+    showMessage("App installed");
+  });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", addInstallButton);
+  else addInstallButton();
 
   /* ---------- Haptics + keyboard shortcuts ---------- */
   document.addEventListener("click", function (e) {
