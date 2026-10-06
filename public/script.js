@@ -930,23 +930,166 @@ if (avatarInput) {
       showMessage("Please choose an image file.");
       return;
     }
-    showMessage("Updating profile picture…");
     try {
-      const dataUrl = await compressImageFile(file, 500, 0.86);
-      const url = await uploadMedia(dataUrl, "image");
-      const user = currentUser();
-      if (!user) return;
-      user.avatarImage = url;
-      if (saveData()) {
-        renderEverything();
-        showMessage("Profile picture updated!");
-      }
+      await openAvatarEditor(file);
     } catch (error) {
       console.error(error);
-      showMessage("Couldn't update your profile picture.");
+      showMessage("Couldn't open that image.");
     }
   });
 }
+
+/* ---------------------------------------------------------
+   PROFILE PICTURE EDITOR — move, zoom and rotate the photo
+   inside a round frame before it is saved.
+--------------------------------------------------------- */
+const AE = { img: null, rot: 0, zoom: 1, x: 0, y: 0, S: 600, saving: false, pointers: new Map(), pinch: 0 };
+
+function aeCanvas() { return document.getElementById("avatarCropCanvas"); }
+function aeDims() {
+  const turned = AE.rot % 2 === 1;
+  return { w: turned ? AE.img.height : AE.img.width, h: turned ? AE.img.width : AE.img.height };
+}
+function aeScale() { const d = aeDims(); return (AE.S / Math.min(d.w, d.h)) * AE.zoom; }
+function aeClamp() {
+  const d = aeDims(), sc = aeScale();
+  const maxX = Math.max(0, (d.w * sc - AE.S) / 2);
+  const maxY = Math.max(0, (d.h * sc - AE.S) / 2);
+  AE.x = Math.min(maxX, Math.max(-maxX, AE.x));
+  AE.y = Math.min(maxY, Math.max(-maxY, AE.y));
+}
+function aeRender(ctx, size) {
+  const k = size / AE.S;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, size, size);
+  ctx.save();
+  ctx.translate(size / 2 + AE.x * k, size / 2 + AE.y * k);
+  ctx.scale(aeScale() * k, aeScale() * k);
+  ctx.rotate(AE.rot * Math.PI / 2);
+  ctx.drawImage(AE.img, -AE.img.width / 2, -AE.img.height / 2);
+  ctx.restore();
+}
+function aeDraw() {
+  const c = aeCanvas();
+  if (!c || !AE.img) return;
+  aeClamp();
+  aeRender(c.getContext("2d"), AE.S);
+}
+function aeSetZoom(z) {
+  AE.zoom = Math.min(4, Math.max(1, z));
+  const slider = document.getElementById("avatarZoom");
+  if (slider) slider.value = String(AE.zoom);
+  aeDraw();
+}
+
+async function openAvatarEditor(file) {
+  const dataUrl = await readFileAsDataURL(file);
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = () => reject(new Error("Could not read that image."));
+    img.src = dataUrl;
+  });
+  AE.img = img; AE.rot = 0; AE.zoom = 1; AE.x = 0; AE.y = 0; AE.saving = false;
+  AE.pointers.clear(); AE.pinch = 0;
+  const c = aeCanvas();
+  c.width = AE.S; c.height = AE.S;
+  const slider = document.getElementById("avatarZoom");
+  if (slider) slider.value = "1";
+  const btn = document.getElementById("avatarSaveBtn");
+  if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+  document.getElementById("avatarEditModal")?.classList.remove("hidden");
+  aeDraw();
+}
+
+function cancelAvatarEdit() {
+  if (AE.saving) return;
+  document.getElementById("avatarEditModal")?.classList.add("hidden");
+  AE.img = null;
+}
+function rotateAvatarEdit() {
+  if (!AE.img) return;
+  AE.rot = (AE.rot + 1) % 4;
+  AE.x = 0; AE.y = 0;
+  aeDraw();
+}
+function resetAvatarEdit() {
+  if (!AE.img) return;
+  AE.rot = 0; AE.x = 0; AE.y = 0;
+  aeSetZoom(1);
+}
+
+async function saveAvatarEdit() {
+  if (!AE.img || AE.saving) return;
+  const user = currentUser();
+  if (!user) return;
+  AE.saving = true;
+  const btn = document.getElementById("avatarSaveBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  try {
+    const out = document.createElement("canvas");
+    out.width = 500; out.height = 500;
+    aeClamp();
+    aeRender(out.getContext("2d"), 500);
+    const url = await uploadMedia(out.toDataURL("image/jpeg", 0.88), "image");
+    user.avatarImage = url;
+    if (saveData()) {
+      AE.saving = false;
+      cancelAvatarEdit();
+      renderEverything();
+      showMessage("Profile picture updated!");
+    } else {
+      AE.saving = false;
+      if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+    }
+  } catch (error) {
+    console.error(error);
+    AE.saving = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Save"; }
+    showMessage("Couldn't update your profile picture.");
+  }
+}
+
+(function wireAvatarEditor() {
+  const frame = document.getElementById("avatarCrop");
+  const slider = document.getElementById("avatarZoom");
+  if (!frame) return;
+  const toCanvasUnits = () => AE.S / frame.getBoundingClientRect().width;
+  const pinchDist = () => {
+    const pts = [...AE.pointers.values()];
+    return pts.length < 2 ? 0 : Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  };
+  frame.addEventListener("pointerdown", e => {
+    if (!AE.img) return;
+    frame.setPointerCapture(e.pointerId);
+    AE.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    AE.pinch = pinchDist();
+  });
+  frame.addEventListener("pointermove", e => {
+    const prev = AE.pointers.get(e.pointerId);
+    if (!prev || !AE.img) return;
+    AE.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (AE.pointers.size >= 2) {
+      const d = pinchDist();
+      if (AE.pinch && d) aeSetZoom(AE.zoom * (d / AE.pinch));
+      AE.pinch = d;
+    } else {
+      const k = toCanvasUnits();
+      AE.x += (e.clientX - prev.x) * k;
+      AE.y += (e.clientY - prev.y) * k;
+      aeDraw();
+    }
+  });
+  const end = e => { AE.pointers.delete(e.pointerId); AE.pinch = pinchDist(); };
+  frame.addEventListener("pointerup", end);
+  frame.addEventListener("pointercancel", end);
+  frame.addEventListener("wheel", e => {
+    if (!AE.img) return;
+    e.preventDefault();
+    aeSetZoom(AE.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08));
+  }, { passive: false });
+  if (slider) slider.addEventListener("input", () => aeSetZoom(parseFloat(slider.value) || 1));
+})();
 
 /* =========================================================
    COVER UPLOAD
