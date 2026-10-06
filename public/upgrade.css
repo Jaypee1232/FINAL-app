@@ -64,7 +64,7 @@ button:active:not(:disabled) { transform: scale(.97); }
 .greeting h2 { margin: 0; font-family: "Playfair Display", serif; font-size: 26px; line-height: 1.2; text-wrap: balance; }
 .greeting p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
 
-.feed-tools { margin: 14px 0 4px; display: grid; gap: 10px; }
+.feed-tools { margin: 14px 0 4px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; min-width: 0; max-width: 100%; }
 .feed-search {
     display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 46px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
@@ -75,7 +75,7 @@ button:active:not(:disabled) { transform: scale(.97); }
 .feed-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 15px; height: 100%; }
 .feed-search input::-webkit-search-cancel-button { display: none; }
 .feed-search button { border: 0; background: var(--surface-alt); width: 24px; height: 24px; border-radius: 50%; line-height: 1; color: var(--muted); }
-.feed-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.feed-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; min-width: 0; max-width: 100%; }
 .chip-row { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: -2px; flex: 1; min-width: 0; }
 .chip-row::-webkit-scrollbar { display: none; }
 .chip {
@@ -173,3 +173,7 @@ a.hashtag:hover { text-decoration: underline; }
     .view-toggle { align-self: flex-end; }
     .gallery-grid { border-radius: 14px; }
 }
+
+/* Prevent any child from forcing the page wider than the screen */
+html, body { max-width: 100%; overflow-x: clip; }
+.main-content, .page, #feed, .gallery-grid, .create-mini { min-width: 0; max-width: 100%; }
