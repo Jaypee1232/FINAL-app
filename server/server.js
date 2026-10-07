@@ -1215,15 +1215,11 @@ const musicHits = new Map(); // username -> [timestamps]
 app.get("/api/music/search", requireAuth, ah(async (req, res) => {
   const q = String(req.query.q || "").trim().slice(0, 80);
   if (q.length < 2) return res.json({ results: [] });
-  const now = Date.now();
-  const hits = (musicHits.get(req.username) || []).filter(t => now - t < 60000);
-  if (hits.length >= 30) return res.status(429).json({ error: "Too many searches. Try again in a minute." });
-  hits.push(now);
-  musicHits.set(req.username, hits);
+  // No per-minute search limit: members can search for as many songs as they like.
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 6000);
-    const r = await fetch("https://itunes.apple.com/search?media=music&entity=song&limit=15&term=" + encodeURIComponent(q), { signal: ctrl.signal });
+    const r = await fetch("https://itunes.apple.com/search?media=music&entity=song&limit=50&term=" + encodeURIComponent(q), { signal: ctrl.signal });
     clearTimeout(timer);
     if (!r.ok) throw new Error("Music service returned " + r.status);
     const json = await r.json();
@@ -1255,7 +1251,7 @@ app.get("/api/music/browse", requireAuth, ah(async (req, res) => {
     const country = MUSIC_FEEDS[feed];
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 7000);
-    const chart = await fetch("https://rss.applemarketingtools.com/api/v2/" + country + "/music/most-played/30/songs.json", { signal: ctrl.signal });
+    const chart = await fetch("https://rss.applemarketingtools.com/api/v2/" + country + "/music/most-played/100/songs.json", { signal: ctrl.signal });
     if (!chart.ok) throw new Error("Chart returned " + chart.status);
     const ids = ((await chart.json()).feed.results || []).map(x => String(x.id)).filter(id => /^\d+$/.test(id));
     if (!ids.length) throw new Error("Empty chart");
