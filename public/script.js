@@ -1691,92 +1691,139 @@ function addCommentMusic() {
   addMusic(track => { commentMusic = track; showCommentPhotoPreview(); });
 }
 
-/* ---- GIF + sticker picker for comments ---- */
-function openCommentPicker(startTab) {
-  if (document.querySelector(".mp-overlay.cp-overlay")) return;
-  const ov = document.createElement("div");
-  ov.className = "mp-overlay cp-overlay";
-  ov.innerHTML = `
-    <div class="mp-box">
-      <div class="pe-top">
-        <button type="button" data-a="close" aria-label="Close">×</button>
-        <strong>Stickers &amp; GIFs</strong>
-        <span></span>
-      </div>
-      <div class="cp-tabs">
-        <button type="button" data-tab="stickers">Stickers</button>
-        <button type="button" data-tab="gifs">GIFs</button>
-      </div>
-      <input class="mp-search cp-search" type="search" placeholder="Search GIFs" autocomplete="off" autocapitalize="off">
-      <div class="mp-list cp-body"></div>
-    </div>`;
-  document.body.appendChild(ov);
-  const body = ov.querySelector(".cp-body");
-  const search = ov.querySelector(".cp-search");
-  const tabs = ov.querySelectorAll("[data-tab]");
-  let tab = "stickers", token = 0, timer = null, gifs = [];
 
-  const close = () => ov.remove();
+/* ---- Bottom sheet used by the music and GIF pickers ----
+   Dim page behind, rounded sheet that slides up, a handle you can drag down to close. */
+function openPickerSheet(extraClass, innerHTML, onClose) {
+  const ov = document.createElement("div");
+  ov.className = "sheet-overlay " + (extraClass || "");
+  ov.innerHTML = `<div class="sheet" role="dialog"><div class="sheet-handle" aria-label="Drag down to close"><span></span></div>${innerHTML}</div>`;
+  document.body.appendChild(ov);
+  const sheet = ov.querySelector(".sheet");
+  const handle = ov.querySelector(".sheet-handle");
+  requestAnimationFrame(() => ov.classList.add("open"));
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (onClose) onClose();
+    ov.classList.remove("open");
+    setTimeout(() => ov.remove(), 200);
+  };
+  ov.addEventListener("click", e => { if (e.target === ov) close(); });
+  let startY = null, dy = 0;
+  handle.addEventListener("touchstart", e => { startY = e.touches[0].clientY; dy = 0; sheet.style.transition = "none"; }, { passive: true });
+  handle.addEventListener("touchmove", e => {
+    if (startY == null) return;
+    dy = Math.max(0, e.touches[0].clientY - startY);
+    sheet.style.transform = "translateY(" + dy + "px)";
+  }, { passive: true });
+  handle.addEventListener("touchend", () => {
+    if (startY == null) return;
+    startY = null;
+    sheet.style.transition = "";
+    if (dy > 90) close(); else sheet.style.transform = "";
+  });
+  handle.addEventListener("click", close);
+  return { ov, sheet, close };
+}
+
+/* ---- GIF + sticker picker for comments (GIPHY-style sheet) ---- */
+function openCommentPicker(startTab) {
+  if (document.querySelector(".sheet-overlay.gif-sheet")) return;
+  const gifMode = startTab === "gifs";
+  const { ov, close } = openPickerSheet("gif-sheet", gifMode
+    ? `<div class="gs-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="cp-search" type="search" placeholder="Search GIPHY" autocomplete="off" autocapitalize="off" enterkeyhint="search"></div>
+       <div class="gs-body"></div>`
+    : `<div class="gs-title">Stickers</div><div class="gs-body"></div>`);
+  const body = ov.querySelector(".gs-body");
+  const search = ov.querySelector(".cp-search");
+  let token = 0, timer = null, gifs = [], offset = 0, loading = false, done = false, cols = null, heights = [0, 0];
+
+  const finish = () => { close(); showCommentPhotoPreview(); document.getElementById("commentInput")?.focus(); };
 
   function drawStickers() {
-    search.classList.add("hidden");
-    body.className = "mp-list cp-body cp-sticker-grid";
+    body.className = "gs-body cp-sticker-grid";
     body.innerHTML = COMMENT_STICKERS.map(e => `<button type="button" class="cp-sticker-btn" data-sticker="${escAttr(e)}" aria-label="Sticker ${escAttr(e)}">${escapeHTML(e)}</button>`).join("");
   }
 
-  async function drawGifs() {
-    search.classList.remove("hidden");
-    body.className = "mp-list cp-body";
+  function addGifs(list) {
+    list.forEach(g => {
+      const i = gifs.push(g) - 1;
+      const ratio = (g.width && g.height) ? g.height / g.width : 1;
+      const c = heights[0] <= heights[1] ? 0 : 1;
+      heights[c] += ratio;
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "cp-gif-btn"; b.dataset.gif = i;
+      b.style.aspectRatio = g.width && g.height ? g.width + " / " + g.height : "1 / 1";
+      const img = document.createElement("img");
+      img.src = g.preview; img.alt = g.title || "GIF"; img.loading = "lazy";
+      b.appendChild(img);
+      cols[c].appendChild(b);
+    });
+  }
+
+  async function loadGifs(reset) {
+    if (reset) { token++; gifs = []; offset = 0; done = false; heights = [0, 0]; }
+    if (loading && !reset) return;
+    if (done) return;
+    const mine = token;
     if (isOffline()) { body.innerHTML = `<p class="mp-empty">You are offline. GIFs need a connection.</p>`; return; }
-    const mine = ++token;
-    const q = search.value.trim();
-    body.innerHTML = `<p class="mp-empty">Loading…</p>`;
+    loading = true;
+    if (reset) { body.innerHTML = `<p class="mp-empty">Loading…</p>`; }
     try {
-      const res = await api("/api/gifs/search?q=" + encodeURIComponent(q));
+      const res = await api("/api/gifs/search?q=" + encodeURIComponent(search.value.trim()) + "&offset=" + offset);
       if (mine !== token) return;
       if (res && res.configured === false) {
-        search.classList.add("hidden");
+        ov.querySelector(".gs-search").classList.add("hidden");
         body.innerHTML = `<p class="mp-empty">GIF search isn't switched on for this site yet.<br>You can still add a GIF from your device:</p>
           <p style="text-align:center"><button type="button" class="soft-button" data-a="device">Choose a GIF from my device</button></p>`;
+        done = true;
         return;
       }
-      gifs = (res && res.results) || [];
-      if (!gifs.length) { body.innerHTML = `<p class="mp-empty">No GIFs found. Try another search.</p>`; return; }
-      body.className = "mp-list cp-body cp-gif-grid";
-      body.innerHTML = gifs.map((g, i) => `<button type="button" class="cp-gif-btn" data-gif="${i}"><img src="${escAttr(g.preview)}" alt="${escAttr(g.title || "GIF")}" loading="lazy"></button>`).join("") +
-        `<p class="cp-credit">Powered by GIPHY</p>`;
+      const list = (res && res.results) || [];
+      if (reset) {
+        if (!list.length) { body.innerHTML = `<p class="mp-empty">No GIFs found. Try another search.</p>`; done = true; return; }
+        body.innerHTML = `<div class="gs-cols"><div class="gs-col"></div><div class="gs-col"></div></div><p class="cp-credit">Powered by GIPHY</p>`;
+        cols = body.querySelectorAll(".gs-col");
+      }
+      if (!list.length) done = true;
+      offset += list.length;
+      addGifs(list);
     } catch (err) {
       if (mine !== token) return;
-      body.innerHTML = `<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't load GIFs.")}</p>`;
+      if (reset) body.innerHTML = `<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't load GIFs.")}</p>`;
+    } finally {
+      if (mine === token) loading = false;
     }
   }
 
-  function setTab(next) {
-    tab = next;
-    tabs.forEach(t => t.classList.toggle("on", t.dataset.tab === tab));
-    if (tab === "stickers") drawStickers(); else drawGifs();
+  if (gifMode) {
+    body.className = "gs-body";
+    body.addEventListener("scroll", () => {
+      if (body.scrollTop + body.clientHeight > body.scrollHeight - 400) loadGifs(false);
+    }, { passive: true });
+    search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => loadGifs(true), 400); });
+    loadGifs(true);
+  } else {
+    drawStickers();
   }
 
-  search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(drawGifs, 400); });
   ov.addEventListener("click", event => {
     const t = event.target.closest("button");
     if (!t) return;
-    if (t.dataset.a === "close") return close();
     if (t.dataset.a === "device") { close(); document.getElementById("commentPhotoInput")?.click(); return; }
-    if (t.dataset.tab) return setTab(t.dataset.tab);
     if (t.dataset.sticker) {
       commentSticker = t.dataset.sticker; commentPhotoDataUrl = null; commentGifUrl = null;
-      close(); showCommentPhotoPreview(); document.getElementById("commentInput")?.focus();
-      return;
+      return finish();
     }
     if (t.dataset.gif != null) {
       const g = gifs[Number(t.dataset.gif)];
       if (!g) return;
       commentGifUrl = g.url; commentPhotoDataUrl = null; commentSticker = null;
-      close(); showCommentPhotoPreview(); document.getElementById("commentInput")?.focus();
+      finish();
     }
   });
-  setTab(startTab === "gifs" ? "gifs" : "stickers");
 }
 
 const commentForm = document.getElementById("commentForm");
@@ -3793,77 +3840,153 @@ function removeComposerMusic() {
   renderMusicPreview();
 }
 
-function addMusic(onUse) {
-  const ov = document.createElement("div");
-  ov.className = "mp-overlay";
-  ov.innerHTML = `
-    <div class="mp-box">
-      <div class="pe-top">
-        <button type="button" data-a="close" aria-label="Close">×</button>
-        <strong>Add music</strong>
-        <span></span>
-      </div>
-      <input class="mp-search" type="search" placeholder="Search songs or artists" autocomplete="off" autocapitalize="off">
-      <div class="mp-list"><p class="mp-empty">Type a song or artist to search.</p></div>
-    </div>`;
-  document.body.appendChild(ov);
+/* Saved songs (the bookmark button) are kept on this device only. */
+function getSavedSongs() {
+  try { const v = JSON.parse(localStorage.getItem("nbh-saved-songs") || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; }
+}
+function setSavedSongs(list) {
+  try { localStorage.setItem("nbh-saved-songs", JSON.stringify(list.slice(0, 200))); } catch (e) { /* storage full or blocked */ }
+}
+function formatSongTime(sec) {
+  sec = Math.round(Number(sec) || 0);
+  if (!sec) return "";
+  return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+}
 
-  const input = ov.querySelector(".mp-search");
-  const list = ov.querySelector(".mp-list");
+function addMusic(onUse) {
+  const BOOKMARK = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>`;
+  const { ov, close: closeSheet } = openPickerSheet("music-sheet", `
+      <div class="gs-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input class="mp-input" type="search" placeholder="Search..." autocomplete="off" autocapitalize="off" enterkeyhint="search"></div>
+      <div class="ms-chips">
+        <button type="button" data-feed="foryou" class="on">For you</button>
+        <button type="button" data-feed="trending">Trending</button>
+        <button type="button" data-feed="saved">Saved</button>
+      </div>
+      <div class="ms-list gs-body"></div>`, () => stopPreview());
+
+  const input = ov.querySelector(".mp-input");
+  const list = ov.querySelector(".ms-list");
+  const chips = ov.querySelectorAll("[data-feed]");
   let results = [];
+  let feed = "foryou";
   let timer = null;
   let token = 0;
+  let selected = -1;
+  const feedCache = {};
 
-  const close = () => { stopPreview(); ov.remove(); };
-
+  const close = () => { stopPreview(); closeSheet(); };
   const show = html => { list.innerHTML = html; };
+  const isSaved = t => getSavedSongs().some(x => String(x.id) === String(t.id));
+
+  function rows(items, withBanner) {
+    results = items;
+    selected = -1;
+    let html = "";
+    if (withBanner && items[0]) {
+      const f = items[0];
+      html += `<button type="button" class="ms-banner" data-row="0">
+        ${f.artwork ? `<img src="${escAttr(f.artwork)}" alt="">` : `<span class="pm-art-empty">♪</span>`}
+        <span class="ms-banner-text"><strong>${escapeHTML(f.title)}</strong><small>${escapeHTML(f.artist)}</small></span></button>`;
+    }
+    html += items.map((t, i) => {
+      const meta = [t.artist, formatSongTime(t.duration)].filter(Boolean).join(" · ");
+      return `<div class="ms-row" data-row="${i}">
+        ${t.artwork ? `<img src="${escAttr(t.artwork)}" alt="" loading="lazy">` : `<span class="pm-art-empty">♪</span>`}
+        <div class="pm-info"><strong>${escapeHTML(t.title)}</strong><small>${escapeHTML(meta)}</small></div>
+        <button type="button" class="ms-use" data-use="${i}">Use</button>
+        <button type="button" class="ms-save${isSaved(t) ? " on" : ""}" data-save="${i}" aria-label="Save song" aria-pressed="${isSaved(t)}">${BOOKMARK}</button>
+      </div>`;
+    }).join("");
+    show(html);
+  }
+
+  async function loadFeed() {
+    if (input.value.trim()) return search();
+    if (feed === "saved") {
+      const saved = getSavedSongs();
+      if (!saved.length) { results = []; show(`<p class="mp-empty">No saved songs yet.<br>Tap the bookmark on a song to save it.</p>`); return; }
+      return rows(saved, false);
+    }
+    if (feedCache[feed]) return rows(feedCache[feed], true);
+    if (isOffline()) { show(`<p class="mp-empty">You are offline. Music needs a connection.</p>`); return; }
+    const mine = ++token;
+    show(`<p class="mp-empty">Loading…</p>`);
+    try {
+      const res = await api("/api/music/browse?feed=" + feed);
+      if (mine !== token) return;
+      feedCache[feed] = (res && res.results) || [];
+      if (!feedCache[feed].length) { show(`<p class="mp-empty">No songs right now. Try searching.</p>`); return; }
+      rows(feedCache[feed], true);
+    } catch (err) {
+      if (mine !== token) return;
+      show(`<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't load songs.")}</p>`);
+    }
+  }
 
   async function search() {
     const q = input.value.trim();
-    if (q.length < 2) { show(`<p class="mp-empty">Type a song or artist to search.</p>`); return; }
+    if (q.length < 2) { loadFeed(); return; }
     const mine = ++token;
     show(`<p class="mp-empty">Searching…</p>`);
     try {
       const res = await api("/api/music/search?q=" + encodeURIComponent(q));
       if (mine !== token) return;
-      results = (res && res.results) || [];
-      if (!results.length) { show(`<p class="mp-empty">No songs found. Try another search.</p>`); return; }
-      show(results.map((t, i) => `
-        <div class="mp-row" data-i="${i}">
-          ${t.artwork ? `<img src="${escAttr(t.artwork)}" alt="">` : `<span class="pm-art-empty">♪</span>`}
-          <div class="pm-info"><strong>${escapeHTML(t.title)}</strong><small>${escapeHTML(t.artist)}</small></div>
-          <button type="button" class="pm-play" data-play="${i}" aria-label="Preview">▶</button>
-          <button type="button" class="mp-use" data-use="${i}">Use</button>
-        </div>`).join(""));
+      const found = (res && res.results) || [];
+      if (!found.length) { show(`<p class="mp-empty">No songs found. Try another search.</p>`); results = []; return; }
+      rows(found, false);
     } catch (err) {
       if (mine !== token) return;
       show(`<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't search right now.")}</p>`);
     }
   }
 
-  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 400); });
+  function selectRow(i) {
+    const track = results[i];
+    if (!track) return;
+    stopPreview(false);
+    if (selected === i) { selected = -1; list.querySelectorAll(".ms-row").forEach(r => r.classList.remove("sel")); return; }
+    selected = i;
+    list.querySelectorAll(".ms-row").forEach(r => r.classList.toggle("sel", Number(r.dataset.row) === i));
+    startPreview(null, track.previewUrl, 0, false);
+  }
 
-  ov.addEventListener("click", event => {
-    const t = event.target.closest("button");
-    if (!t) return;
-    if (t.dataset.a === "close") return close();
-    if (t.dataset.play != null) {
-      const track = results[Number(t.dataset.play)];
-      if (track) togglePreview(t, track.previewUrl, 0);
+  chips.forEach(c => c.addEventListener("click", () => {
+    feed = c.dataset.feed;
+    chips.forEach(x => x.classList.toggle("on", x === c));
+    stopPreview(false);
+    loadFeed();
+  }));
+  input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => (input.value.trim().length >= 2 ? search() : loadFeed()), 400); });
+
+  list.addEventListener("click", event => {
+    const save = event.target.closest("[data-save]");
+    if (save) {
+      const track = results[Number(save.dataset.save)];
+      if (!track) return;
+      let saved = getSavedSongs();
+      if (saved.some(x => String(x.id) === String(track.id))) saved = saved.filter(x => String(x.id) !== String(track.id));
+      else saved.unshift({ id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, duration: track.duration });
+      setSavedSongs(saved);
+      if (feed === "saved" && !input.value.trim()) loadFeed();
+      else { save.classList.toggle("on"); save.setAttribute("aria-pressed", save.classList.contains("on")); }
       return;
     }
-    if (t.dataset.use != null) {
-      const track = results[Number(t.dataset.use)];
+    const use = event.target.closest("[data-use]");
+    if (use) {
+      const track = results[Number(use.dataset.use)];
       if (!track) return;
       const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: 0 };
       close();
       if (typeof onUse === "function") { onUse(picked); return; }
       composerMusic = picked;
       renderMusicPreview();
+      return;
     }
+    const row = event.target.closest("[data-row]");
+    if (row) selectRow(Number(row.dataset.row));
   });
 
-  setTimeout(() => input.focus(), 50);
+  loadFeed();
 }
 
 /* =========================================================
