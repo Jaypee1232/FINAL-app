@@ -252,3 +252,19 @@ html, body { max-width: 100%; overflow-x: clip; }
 .gif-sheet .cp-gif-btn img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .gif-sheet .cp-credit { margin: 14px 0 0; }
 .gif-sheet .cp-sticker-grid { display: grid; }
+
+/* ---------- View-only when offline: write controls look (and are) switched off ---------- */
+html.is-offline .create-button,
+html.is-offline .rail-create,
+html.is-offline .create-mini,
+html.is-offline .comment-form,
+html.is-offline #publishButton {
+  opacity: .45;
+  filter: grayscale(.6);
+}
+html.is-offline .create-button,
+html.is-offline .rail-create,
+html.is-offline .create-mini,
+html.is-offline .comment-form {
+  cursor: not-allowed;
+}
