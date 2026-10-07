@@ -134,12 +134,14 @@ const MAX_VIDEO_BYTES = 15 * 1024 * 1024;
 ========================================================= */
 
 /* ---------- OFFLINE MODE ----------
-   - The last feed + your login are kept on this device, so the app still opens and you can
-     read everything you already loaded while offline.
-   - Text changes (comments, reactions, posts without new uploads, edits) are kept on the
-     device and sent automatically the moment you are back online.
-   - Photos / videos / GIF uploads need a connection (they go to Cloudinary).
+   OFFLINE = VIEW ONLY.
+   - You CAN log in offline (after you have logged in once with a connection on this device)
+     and read everything that was already loaded.
+   - You CANNOT post, comment, react, repost, save, edit, delete, upload or change anything
+     while offline. Nothing is queued — those controls are blocked until you reconnect.
    - A red "You are offline" bar shows at the top whenever there is no connection. */
+const READ_ONLY_MESSAGE = "You're offline — view only. Reconnect to post or make changes.";
+const OFFLINE_CRED_KEY = "nbh_offline_cred_v1";
 const OFFLINE_STATE_KEY = "nbh_offline_state_v1";
 const OFFLINE_SESSION_KEY = "nbh_offline_session_v1";
 const OFFLINE_DIRTY_KEY = "nbh_offline_dirty_v1";
@@ -159,6 +161,65 @@ function offlineClearAll() {
   try { [OFFLINE_STATE_KEY, OFFLINE_SESSION_KEY, OFFLINE_DIRTY_KEY].forEach(k => localStorage.removeItem(k)); } catch (e) {}
   pendingSync = false;
 }
+// Logging out: drop the auto-open session, but keep the saved feed + login check so the member
+// can still log in again offline (view only). Nothing opens without the password.
+function offlineLogoutKeepLogin() {
+  try { [OFFLINE_SESSION_KEY, OFFLINE_DIRTY_KEY].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+  pendingSync = false;
+}
+
+// Put the screen back to the last copy saved from the server (used when a change is blocked offline).
+function revertToSavedCopy() {
+  const cached = offlineRead(OFFLINE_STATE_KEY);
+  if (!(cached && cached.data && session && cached.owner === session.username)) return;
+  data = cached.data;
+  try { upgradeData(); } catch (e) {}
+  try { renderEverything(); } catch (e) {}
+  try { if (activePostId != null && typeof refreshPostView === "function") refreshPostView(); } catch (e) {}
+}
+
+/* ---------- Offline login (password check done on this device) ---------- */
+function bytesToB64(buf) { let t = ""; new Uint8Array(buf).forEach(b => { t += String.fromCharCode(b); }); return btoa(t); }
+function b64ToBytes(b64) { return Uint8Array.from(atob(b64), c => c.charCodeAt(0)); }
+async function offlinePasswordHash(password, saltBytes) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: saltBytes, iterations: 150000, hash: "SHA-256" }, key, 256);
+  return bytesToB64(bits);
+}
+// Called after every successful online login: stores only a salted hash, never the password itself.
+async function rememberLoginForOffline(username, password, sessionPayload) {
+  try {
+    if (!(window.crypto && crypto.subtle)) return;
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const hash = await offlinePasswordHash(password, salt);
+    offlineWrite(OFFLINE_CRED_KEY, { username: String(username).toLowerCase(), salt: bytesToB64(salt), hash, session: sessionPayload });
+  } catch (e) { /* offline login just won't be available */ }
+}
+async function offlineLogin(username, password) {
+  const cred = offlineRead(OFFLINE_CRED_KEY);
+  const cached = offlineRead(OFFLINE_STATE_KEY);
+  if (!cred || !cred.session || !cached || !cached.data || cached.owner !== cred.session.username) {
+    setLoginError("You're offline. Log in once with a connection first — then you can open the app offline (view only).");
+    return false;
+  }
+  let ok = false;
+  try {
+    ok = cred.username === String(username).toLowerCase() &&
+      (await offlinePasswordHash(password, b64ToBytes(cred.salt))) === cred.hash;
+  } catch (e) { ok = false; }
+  if (!ok) { setLoginError("Incorrect username or password."); return false; }
+  session = cred.session;
+  data = cached.data;
+  pendingSync = false;
+  offlineWrite(OFFLINE_SESSION_KEY, session);
+  upgradeData();
+  markTabAlive();
+  enterApplication();
+  updateNetBanner();
+  showMessage("You are offline — view only.");
+  return true;
+}
+
 function offlineCacheState() {
   if (!session || !session.username) return;
   offlineWrite(OFFLINE_STATE_KEY, { owner: session.username, data });
@@ -183,9 +244,7 @@ function updateNetBanner() {
   if (!el) return;
   const sub = el.querySelector("small");
   if (sub) {
-    sub.textContent = pendingSync
-      ? "Your changes are saved on this device and will sync when you reconnect."
-      : "You can still read what's already loaded. New activity appears when you reconnect.";
+    sub.textContent = "View only — you can read what's already loaded, but posting and changes are off until you reconnect.";
   }
   el.classList.toggle("show", netOffline);
 }
@@ -208,7 +267,7 @@ function setOffline(value) {
   } else {
     clearInterval(netProbeTimer);
     netProbeTimer = null;
-    showMessage(pendingSync ? "Back online — syncing your changes…" : "Back online");
+    showMessage(pendingSync ? "Back online — syncing your changes…" : "Back online — you can post again.");
     syncAfterReconnect();
   }
 }
@@ -231,6 +290,13 @@ if (document.body) updateNetBanner(); else window.addEventListener("DOMContentLo
 
 async function api(path, options = {}) {
   let response;
+  // View-only offline: never send a write while offline (login/logout are the only exceptions).
+  if (netOffline && options.method && options.method !== "GET" && !/^\/api\/auth\/(login|logout)$/.test(path)) {
+    const blocked = new Error(READ_ONLY_MESSAGE);
+    blocked.offline = true;
+    blocked.readOnly = true;
+    throw blocked;
+  }
   try {
     response = await fetch(path, {
       method: options.method || "GET",
@@ -326,6 +392,11 @@ let savesInFlight = 0;
 let lastSaveOk = true; // did the most recent save reach the server? (publishPost waits on this)
 
 function saveData() {
+  if (netOffline) {          // view-only: never save or queue anything while offline
+    revertToSavedCopy();
+    showMessage(READ_ONLY_MESSAGE);
+    return false;
+  }
   savesInFlight++;
   saveChain = saveChain.then(() => attemptSave(3));
   return true;
@@ -362,13 +433,10 @@ async function attemptSave(retriesLeft) {
     }
   } catch (error) {
     if (error.offline) {
-      // No connection: keep the change on this device and send it when we're back online.
-      pendingSync = true;
-      lastSaveOk = true;
-      offlineCacheState();
-      offlineWrite(OFFLINE_DIRTY_KEY, true);
-      updateNetBanner();
-      showMessage("Saved on this device — it will sync when you're back online.");
+      // Connection dropped mid-save: nothing is kept or queued (view-only offline).
+      lastSaveOk = false;
+      revertToSavedCopy();
+      showMessage(READ_ONLY_MESSAGE);
       return;
     }
     const freshState = error.status === 409 && error.payload && error.payload.state;
@@ -671,13 +739,20 @@ if (loginForm) {
 
     if (submitButton) submitButton.disabled = true;
     try {
+      if (isOffline()) { await offlineLogin(username, password); return; }
       const result = await api("/api/auth/login", { method: "POST", body: { username, password } });
       session = result;
+      await rememberLoginForOffline(username, password, result);
       markTabAlive();
       await loadStateAndEnter();
     } catch (error) {
-      setLoginError(error.message || "Incorrect username or password.");
-      showMessage(error.message || "Incorrect username or password.");
+      if (error && error.offline) {
+        session = null;
+        await offlineLogin(username, password);
+      } else {
+        setLoginError(error.message || "Incorrect username or password.");
+        showMessage(error.message || "Incorrect username or password.");
+      }
     } finally {
       if (submitButton) submitButton.disabled = false;
     }
@@ -978,7 +1053,7 @@ async function logout(options = {}) {
   }
 
   session = null;
-  offlineClearAll();
+  offlineLogoutKeepLogin();
   updateNetBanner();
   data = { users: [], posts: [], social: {} };
 
@@ -1030,7 +1105,7 @@ function openPage(page) {
   if (page === "notifications") {
     const social = ensureSocial();
     social.notifications.forEach(n => { n.unread = false; });
-    saveData();
+    if (!isOffline()) saveData();
     renderNotifications();
     updateNotificationDot();
   }
@@ -2866,7 +2941,7 @@ function handleNotificationClick(index) {
   if (!notification) return;
 
   notification.unread = false;
-  saveData();
+  if (!isOffline()) saveData();
   updateNotificationDot();
 
   if (notification.postId != null && data.posts.some(p => p.id === notification.postId)) {
@@ -4404,3 +4479,46 @@ async function toggleCommentLike(postId, commentId) {
     showMessage("Couldn't update that like.");
   }
 }
+
+/* =========================================================
+   VIEW-ONLY WHEN OFFLINE
+   Every action that would post or change something is
+   blocked while there is no connection. (login / logout and
+   reading are still allowed.)
+========================================================= */
+(function enforceViewOnlyWhenOffline() {
+  const guarded = [
+    "openComposer", "publishPost", "toggleReaction", "sharePost", "savePost", "deletePost",
+    "deleteComment", "toggleCommentLike", "likeByDoubleTap", "clearNotifications",
+    "saveProfile", "saveAvatarEdit", "clearMyBirthday", "createAlbum", "addPhotoToAlbum",
+    "removePhotoFromAlbum", "adminRenameUser", "adminResetPassword", "adminToggleDisabled",
+    "adminToggleRole", "deleteAdminPost", "deleteAdminUser", "createPoll"
+  ];
+  guarded.forEach(name => {
+    const original = window[name];
+    if (typeof original !== "function") return;
+    window[name] = function () {
+      if (isOffline()) { showMessage(READ_ONLY_MESSAGE); return; }
+      return original.apply(this, arguments);
+    };
+  });
+
+  // Forms (comments, change password, admin create-user...) can't be submitted offline — except login.
+  document.addEventListener("submit", function (event) {
+    if (!isOffline()) return;
+    if (event.target && event.target.id === "loginForm") return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    showMessage(READ_ONLY_MESSAGE);
+  }, true);
+
+  // Typing into comment / composer boxes is pointless offline: tell the member right away.
+  document.addEventListener("focusin", function (event) {
+    if (!isOffline()) return;
+    const el = event.target;
+    if (el && el.matches && el.matches("#commentInput, #postText")) {
+      el.blur();
+      showMessage(READ_ONLY_MESSAGE);
+    }
+  }, true);
+})();
