@@ -3671,7 +3671,8 @@ async function openPhotoEditor(file) {
 let previewAudio = null;
 let previewSource = null;            // "feed" (a post's music) or "other" (picker / composer)
 const autoplayBlocked = new Set();   // songs the member stopped, or that finished, while still in view
-const MUSIC_MAX_SECONDS = 30;        // hard cap: a post's music never plays longer than this
+// No time cap: a post's music loops until the member pauses it or scrolls away.
+// (Apple's previews are ~30-second clips, so "unlimited" means the clip repeats.)
 
 function syncMusicButtons() {
   document.querySelectorAll(".post-music").forEach(box => {
@@ -3695,11 +3696,13 @@ function startPreview(btn, url, start, auto) {
   if (!previewAudio) previewAudio = new Audio();
   const from = Number(start) || 0;
   previewAudio.src = url;
-  previewAudio.onended = () => stopPreview(true);
-  previewAudio.onloadedmetadata = () => { if (from) previewAudio.currentTime = from; };
-  previewAudio.ontimeupdate = () => {
-    if (previewAudio.currentTime - from >= MUSIC_MAX_SECONDS) stopPreview(true);
+  previewAudio.onended = () => {
+    // Loop forever: jump back to the start point and keep playing.
+    try { previewAudio.currentTime = from; } catch (e) {}
+    previewAudio.play().catch(() => stopPreview(false));
   };
+  previewAudio.onloadedmetadata = () => { if (from) previewAudio.currentTime = from; };
+  previewAudio.ontimeupdate = null;
   previewKey = url;
   previewSource = (btn && btn.closest(".post-card")) ? "feed" : "other";
   if (btn) btn.textContent = "❚❚";
