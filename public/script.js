@@ -2619,7 +2619,7 @@ function renderUserProfileModal() {
     : escapeHTML(person.avatar || avatarLetter(person.name));
 
   const coverStyle = person.bannerImage
-    ? `style="background-image:url('${escapeHTML(person.bannerImage)}');background-size:cover;background-position:center;"`
+    ? `style="background-image:url('${escapeHTML(person.bannerImage)}');background-size:100% 100%;background-position:center;background-repeat:no-repeat;"`
     : "";
 
   const ownPosts = data.posts.filter(post => post.username && usernamesMatch(post.username, person.username));
