@@ -739,7 +739,8 @@ if (loginForm) {
 
     if (submitButton) submitButton.disabled = true;
     try {
-      if (isOffline()) { await offlineLogin(username, password); return; }
+      // Only skip the server when the device itself says it has no connection; a stale "offline" flag must not block login.
+      if (typeof navigator !== "undefined" && navigator.onLine === false) { await offlineLogin(username, password); return; }
       const result = await api("/api/auth/login", { method: "POST", body: { username, password } });
       session = result;
       await rememberLoginForOffline(username, password, result);
