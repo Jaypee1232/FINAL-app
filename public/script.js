@@ -1103,7 +1103,7 @@ if (avatarInput) {
    PROFILE PICTURE EDITOR — move, zoom and rotate the photo
    inside a round frame before it is saved.
 --------------------------------------------------------- */
-const AE = { img: null, rot: 0, zoom: 1, x: 0, y: 0, W: 600, H: 600, mode: "avatar", saving: false, pointers: new Map(), pinch: 0 };
+const AE = { img: null, rot: 0, zoom: 1, minZoom: 1, x: 0, y: 0, W: 600, H: 600, mode: "avatar", saving: false, pointers: new Map(), pinch: 0 };
 const AE_MODES = {
   avatar: { W: 600, H: 600, outW: 500, outH: 500, title: "Edit Profile Picture", done: "Profile picture updated!" },
   banner: { W: 900, H: 300, outW: 1500, outH: 500, title: "Adjust Cover Photo", done: "Cover photo updated!" }
@@ -1116,6 +1116,16 @@ function aeDims() {
 }
 // "Cover" fit: the photo always fills the whole frame (no empty bars); zoom only goes in from there.
 function aeScale() { const d = aeDims(); return Math.max(AE.W / d.w, AE.H / d.h) * AE.zoom; }
+// Zoom value at which the WHOLE photo is visible inside the frame (bars may appear at the sides).
+function aeFitZoom() {
+  const d = aeDims();
+  return Math.min(AE.W / d.w, AE.H / d.h) / Math.max(AE.W / d.w, AE.H / d.h);
+}
+function aeUpdateMinZoom() {
+  AE.minZoom = AE.mode === "banner" ? Math.min(1, aeFitZoom()) : 1;
+  const slider = document.getElementById("avatarZoom");
+  if (slider) slider.min = String(AE.minZoom);
+}
 function aeClamp() {
   const d = aeDims(), sc = aeScale();
   const maxX = Math.max(0, (d.w * sc - AE.W) / 2);
@@ -1125,8 +1135,20 @@ function aeClamp() {
 }
 function aeRender(ctx, outW) {
   const k = outW / AE.W;
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = AE.mode === "banner" ? "#0f172a" : "#ffffff";
   ctx.fillRect(0, 0, AE.W * k, AE.H * k);
+  if (AE.mode === "banner" && AE.zoom < 1.0001) {
+    // Behind a photo that doesn't fill the banner, show a soft blurred copy instead of plain bars.
+    const d = aeDims();
+    const cs = Math.max(AE.W / d.w, AE.H / d.h) * 1.15 * k;
+    ctx.save();
+    ctx.translate(AE.W * k / 2, AE.H * k / 2);
+    ctx.scale(cs, cs);
+    ctx.rotate(AE.rot * Math.PI / 2);
+    if ("filter" in ctx) ctx.filter = "blur(" + Math.round(18 * k) + "px) brightness(.7)";
+    ctx.drawImage(AE.img, -AE.img.width / 2, -AE.img.height / 2);
+    ctx.restore();
+  }
   ctx.save();
   ctx.translate(AE.W * k / 2 + AE.x * k, AE.H * k / 2 + AE.y * k);
   ctx.scale(aeScale() * k, aeScale() * k);
@@ -1141,7 +1163,7 @@ function aeDraw() {
   aeRender(c.getContext("2d"), AE.W);
 }
 function aeSetZoom(z) {
-  AE.zoom = Math.min(4, Math.max(1, z));
+  AE.zoom = Math.min(4, Math.max(AE.minZoom || 1, z));
   const slider = document.getElementById("avatarZoom");
   if (slider) slider.value = String(AE.zoom);
   aeDraw();
@@ -1160,6 +1182,11 @@ async function openAvatarEditor(file, mode) {
   AE.img = img; AE.rot = 0; AE.zoom = 1; AE.x = 0; AE.y = 0; AE.saving = false;
   AE.mode = mode; AE.W = cfg.W; AE.H = cfg.H;
   AE.pointers.clear(); AE.pinch = 0;
+  aeUpdateMinZoom();
+  // Cover photos open showing the whole picture; zoom in to crop tighter.
+  if (mode === "banner") AE.zoom = AE.minZoom;
+  const fitBtn = document.getElementById("avatarFitBtn");
+  if (fitBtn) fitBtn.hidden = mode !== "banner";
   const c = aeCanvas();
   c.width = AE.W; c.height = AE.H;
   const frame = document.getElementById("avatarCrop");
@@ -1167,7 +1194,7 @@ async function openAvatarEditor(file, mode) {
   const title = document.getElementById("avatarEditTitle");
   if (title) title.textContent = cfg.title;
   const slider = document.getElementById("avatarZoom");
-  if (slider) slider.value = "1";
+  if (slider) slider.value = String(AE.zoom);
   const btn = document.getElementById("avatarSaveBtn");
   if (btn) { btn.disabled = false; btn.textContent = "Save"; }
   document.getElementById("avatarEditModal")?.classList.remove("hidden");
@@ -1194,12 +1221,20 @@ function rotateAvatarEdit() {
   if (!AE.img) return;
   AE.rot = (AE.rot + 1) % 4;
   AE.x = 0; AE.y = 0;
-  aeDraw();
+  aeUpdateMinZoom();
+  aeSetZoom(AE.mode === "banner" ? AE.minZoom : AE.zoom);
 }
 function resetAvatarEdit() {
   if (!AE.img) return;
   AE.rot = 0; AE.x = 0; AE.y = 0;
-  aeSetZoom(1);
+  aeUpdateMinZoom();
+  aeSetZoom(AE.mode === "banner" ? AE.minZoom : 1);
+}
+function fitAvatarEdit() {
+  if (!AE.img) return;
+  AE.x = 0; AE.y = 0;
+  aeUpdateMinZoom();
+  aeSetZoom(AE.minZoom);
 }
 
 async function saveAvatarEdit() {
