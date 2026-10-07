@@ -717,7 +717,8 @@ app.get("/api/gifs/search", requireAuth, ah(async (req, res) => {
     const timer = setTimeout(() => ctrl.abort(), 6000);
     const endpoint = q ? "search" : "trending";
     const url = "https://api.giphy.com/v1/" + type + "/" + endpoint + "?api_key=" + encodeURIComponent(key) +
-      "&limit=24&rating=pg" + (q ? "&q=" + encodeURIComponent(q) : "");
+      "&limit=24&rating=pg&offset=" + Math.min(Math.max(parseInt(req.query.offset, 10) || 0, 0), 200) +
+      (q ? "&q=" + encodeURIComponent(q) : "");
     const r = await fetch(url, { signal: ctrl.signal });
     clearTimeout(timer);
     if (!r.ok) throw new Error("GIF service returned " + r.status);
@@ -725,8 +726,9 @@ app.get("/api/gifs/search", requireAuth, ah(async (req, res) => {
     const results = (json.data || []).map(g => {
       const imgs = g.images || {};
       const full = imgs.fixed_height || imgs.original || {};
-      const small = imgs.fixed_width_small || imgs.fixed_width || full;
-      return { id: String(g.id), title: clampString(g.title, 100), url: full.url, preview: small.url };
+      const small = imgs.fixed_width || imgs.fixed_width_small || full;
+      return { id: String(g.id), title: clampString(g.title, 100), url: full.url, preview: small.url,
+        width: Number(small.width) || 0, height: Number(small.height) || 0 };
     }).filter(g => isGiphyUrl(g.url) && isGiphyUrl(g.preview));
     res.json({ configured: true, results });
   } catch (err) {
@@ -1232,11 +1234,51 @@ app.get("/api/music/search", requireAuth, ah(async (req, res) => {
         title: t.trackName,
         artist: t.artistName,
         artwork: isAppleMediaUrl(t.artworkUrl100) ? String(t.artworkUrl100).replace("100x100", "200x200") : "",
-        previewUrl: t.previewUrl
+        previewUrl: t.previewUrl,
+        duration: Math.round((Number(t.trackTimeMillis) || 0) / 1000)
       }));
     res.json({ results });
   } catch (err) {
     res.status(502).json({ error: "Couldn't reach the music search. Try again." });
+  }
+}));
+
+// "For you" (Philippines charts) and "Trending" (worldwide/US charts) lists shown before
+// anyone types a search. Apple's chart feed gives song ids, then a lookup adds the previews.
+const musicBrowseCache = new Map(); // feed -> { at, results }
+const MUSIC_FEEDS = { foryou: "ph", trending: "us" };
+app.get("/api/music/browse", requireAuth, ah(async (req, res) => {
+  const feed = MUSIC_FEEDS[req.query.feed] ? String(req.query.feed) : "foryou";
+  const cached = musicBrowseCache.get(feed);
+  if (cached && Date.now() - cached.at < 60 * 60 * 1000) return res.json({ results: cached.results });
+  try {
+    const country = MUSIC_FEEDS[feed];
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 7000);
+    const chart = await fetch("https://rss.applemarketingtools.com/api/v2/" + country + "/music/most-played/30/songs.json", { signal: ctrl.signal });
+    if (!chart.ok) throw new Error("Chart returned " + chart.status);
+    const ids = ((await chart.json()).feed.results || []).map(x => String(x.id)).filter(id => /^\d+$/.test(id));
+    if (!ids.length) throw new Error("Empty chart");
+    const look = await fetch("https://itunes.apple.com/lookup?country=" + country + "&entity=song&id=" + ids.join(","), { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!look.ok) throw new Error("Lookup returned " + look.status);
+    const byId = new Map();
+    for (const t of ((await look.json()).results || [])) {
+      if (t && t.previewUrl && isAppleMediaUrl(t.previewUrl)) byId.set(String(t.trackId), t);
+    }
+    const results = ids.map(id => byId.get(id)).filter(Boolean).map(t => ({
+      id: String(t.trackId),
+      title: t.trackName,
+      artist: t.artistName,
+      artwork: isAppleMediaUrl(t.artworkUrl100) ? String(t.artworkUrl100).replace("100x100", "200x200") : "",
+      previewUrl: t.previewUrl,
+      duration: Math.round((Number(t.trackTimeMillis) || 0) / 1000)
+    }));
+    musicBrowseCache.set(feed, { at: Date.now(), results });
+    res.json({ results });
+  } catch (err) {
+    if (cached) return res.json({ results: cached.results });
+    res.status(502).json({ error: "Couldn't load songs. Try searching instead." });
   }
 }));
 
