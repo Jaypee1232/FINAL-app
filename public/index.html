@@ -430,11 +430,12 @@
         <canvas id="avatarCropCanvas" width="600" height="600"></canvas>
         <div class="avatar-crop-ring"></div>
       </div>
-      <p class="avatar-crop-hint">Drag to move · pinch or slide to zoom</p>
+      <p class="avatar-crop-hint">Drag to move · pinch or slide to zoom · slide left to fit the whole photo</p>
       <div class="avatar-crop-controls">
-        <input type="range" id="avatarZoom" min="1" max="4" step="0.01" value="1" aria-label="Zoom">
+        <input type="range" id="avatarZoom" min="0.2" max="4" step="0.01" value="1" aria-label="Zoom">
       </div>
       <div class="avatar-crop-buttons">
+        <button type="button" class="soft-button" id="avatarFitBtn" onclick="fitAvatarEdit()" hidden>Fit whole photo</button>
         <button type="button" class="soft-button" onclick="centerAvatarEdit()">Center</button>
         <button type="button" class="soft-button" onclick="rotateAvatarEdit()">Rotate</button>
         <button type="button" class="soft-button" onclick="resetAvatarEdit()">Reset</button>
