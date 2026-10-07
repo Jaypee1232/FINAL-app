@@ -1025,6 +1025,10 @@ textarea:focus-visible,
 
 html[data-theme="dark"] .profile-cover {
     background: linear-gradient(135deg, #3a2436, #241a2b, #16233d);
+    /* the shorthand above resets these, which made the cover show zoomed in (cropped) in dark mode */
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
 .cover-edit-button {
