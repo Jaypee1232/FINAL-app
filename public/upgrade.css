@@ -318,3 +318,5 @@ html.is-offline .comment-form {
 .mt-frame::before { content: ""; position: absolute; inset: 0; border-radius: 8px; padding: 3px; background: linear-gradient(135deg, #feda75, #fa7e1e, #d62976, #962fbf); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
 .mt-info { text-align: center; margin: 10px 0 0; font-size: 14px; opacity: .8; }
 .pm-edit { flex: none; border: 0; background: transparent; color: inherit; font-size: 18px; padding: 6px 8px; cursor: pointer; }
+
+.pm-edit { flex: none; height: 36px; padding: 0 14px; border-radius: 999px; border: 0; background: var(--text); color: var(--surface); font: inherit; font-weight: 700; font-size: 14px; }
