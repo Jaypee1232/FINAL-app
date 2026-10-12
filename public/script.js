@@ -3995,9 +3995,9 @@ function musicBarHTML(music, removable) {
   return `
     <div class="post-music" data-preview="${escAttr(music.previewUrl)}" data-start="${Number(music.start) || 0}" data-end="${Number(music.end) || 0}">
       ${art}
-      <div class="pm-info"><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
+      <div class="pm-info"${removable ? ` onclick="editAttachedMusic('${removable === "comment" ? "comment" : "composer"}')"` : ""}><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
       <button type="button" class="pm-play" onclick="togglePostMusic(this)" aria-label="Play music">${playing ? "❚❚" : "▶"}</button>
-      ${removable ? `<button type="button" class="pm-edit" onclick="editAttachedMusic('${removable === "comment" ? "comment" : "composer"}')" aria-label="Edit music">✂</button>` : ""}
+      ${removable ? `<button type="button" class="pm-edit" onclick="editAttachedMusic('${removable === "comment" ? "comment" : "composer"}')" aria-label="Edit music">Edit</button>` : ""}
       ${removable ? `<button type="button" class="pm-x" onclick="${removable === "comment" ? "clearCommentMusic()" : "removeComposerMusic()"}" aria-label="Remove music">×</button>` : ""}
     </div>`;
 }
