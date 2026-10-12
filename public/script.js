@@ -4040,7 +4040,7 @@ function openMusicTrimmer(track, opts) {
   opts = opts || {};
   const PPS = 20;                      // pixels per second of song
   const LENS = [5, 10, 15, 20, 30];
-  let total = 30, len = 15, start = 0, chorus = null, wave = null, ignoreScroll = false, timer = null;
+  let total = 30, len = 15, start = 0, chorus = null, wave = null, timer = null;
   const s0 = Number(opts.start) || 0, e0 = Number(opts.end) || 0;
   const hasInitial = e0 > s0;
   if (hasInitial) { start = s0; len = LENS.reduce((b, x) => Math.abs(x - (e0 - s0)) < Math.abs(b - (e0 - s0)) ? x : b, 15); }
@@ -4075,18 +4075,25 @@ function openMusicTrimmer(track, opts) {
   const fill = q(".mt-fill"), playBtn = q(".mt-play"), chip = q(".mt-chip"), info = q(".mt-info");
   const fmt = n => Number(n).toFixed(1).replace(/\.0$/, "") + "s";
 
+  const wrap = q(".mt-wavewrap");
+  let bars = [];
+
+  // The waveform slides under the fixed frame; `start` is the song time sitting at the frame's left edge.
+  function moveTo(v, live) {
+    start = Math.max(0, Math.min(Math.round(v * 10) / 10, total - len));
+    waveEl.style.transform = "translateX(" + (-start * PPS) + "px)";
+    paintBars();
+    paintInfo();
+    if (live) { clearTimeout(timer); timer = setTimeout(() => applyWindow(false), 120); }
+  }
+
   function layout() {
     const frameW = len * PPS;
     const pad = Math.max(0, (scroll.clientWidth - frameW) / 2);
     waveEl.style.paddingLeft = pad + "px";
-    waveEl.style.paddingRight = pad + "px";
     frame.style.width = frameW + "px";
     lenBtn.textContent = len;
-    start = Math.max(0, Math.min(start, total - len));
-    ignoreScroll = true;
-    scroll.scrollLeft = start * PPS;
-    setTimeout(() => { ignoreScroll = false; }, 60);
-    paintInfo();
+    moveTo(start, false);
   }
 
   function drawBars() {
@@ -4099,6 +4106,15 @@ function openMusicTrimmer(track, opts) {
       html += `<span class="${inCh ? "ch" : ""}" style="height:${Math.round(10 + v * 44)}px"></span>`;
     }
     waveEl.innerHTML = html;
+    bars = Array.from(waveEl.children);
+  }
+
+  // Bars inside the frame are bright, the rest are dimmed, so it is obvious what will play.
+  function paintBars() {
+    for (let i = 0; i < bars.length; i++) {
+      const t = i * 0.5;
+      bars[i].classList.toggle("out", !(t >= start - 0.01 && t < start + len - 0.01));
+    }
   }
 
   function paintInfo() {
@@ -4113,13 +4129,37 @@ function openMusicTrimmer(track, opts) {
     playBtn.textContent = "❚❚";
   }
 
-  scroll.addEventListener("scroll", () => {
-    if (ignoreScroll) return;
-    start = Math.max(0, Math.min(Math.round(scroll.scrollLeft / PPS * 10) / 10, total - len));
-    paintInfo();
-    clearTimeout(timer);
-    timer = setTimeout(() => applyWindow(false), 120);
-  }, { passive: true });
+  // Drag (finger or mouse) to slide the song; let go and it keeps gliding a little.
+  let drag = null, glide = null;
+  wrap.addEventListener("pointerdown", e => {
+    cancelAnimationFrame(glide);
+    drag = { x: e.clientX, s: start, lx: e.clientX, lt: performance.now(), v: 0 };
+    try { wrap.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  wrap.addEventListener("pointermove", e => {
+    if (!drag) return;
+    moveTo(drag.s - (e.clientX - drag.x) / PPS, true);
+    const now = performance.now();
+    drag.v = -(e.clientX - drag.lx) / PPS / Math.max(1, now - drag.lt) * 16;
+    drag.lx = e.clientX; drag.lt = now;
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    let v = Math.abs(performance.now() - drag.lt) < 80 ? drag.v : 0;
+    drag = null;
+    const step = () => {
+      if (Math.abs(v) < 0.02 || !ov.isConnected) return;
+      const before = start;
+      moveTo(start + v, true);
+      if (start === before) return;
+      v *= 0.93;
+      glide = requestAnimationFrame(step);
+    };
+    glide = requestAnimationFrame(step);
+  };
+  wrap.addEventListener("pointerup", endDrag);
+  wrap.addEventListener("pointercancel", endDrag);
+  wrap.addEventListener("wheel", e => { e.preventDefault(); moveTo(start + (e.deltaX || e.deltaY) / PPS, true); }, { passive: false });
 
   lenBtn.addEventListener("click", () => {
     const opts2 = LENS.filter(x => x <= total);
