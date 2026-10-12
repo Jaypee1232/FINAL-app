@@ -320,3 +320,8 @@ html.is-offline .comment-form {
 .pm-edit { flex: none; border: 0; background: transparent; color: inherit; font-size: 18px; padding: 6px 8px; cursor: pointer; }
 
 .pm-edit { flex: none; height: 36px; padding: 0 14px; border-radius: 999px; border: 0; background: var(--text); color: var(--surface); font: inherit; font-weight: 700; font-size: 14px; }
+
+.mt-scroll { overflow: hidden !important; touch-action: none; cursor: grab; }
+.mt-wavewrap { touch-action: none; -webkit-user-select: none; user-select: none; }
+.mt-wave { will-change: transform; }
+.mt-wave span.out { opacity: .4; }
