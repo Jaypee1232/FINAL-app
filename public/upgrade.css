@@ -268,3 +268,53 @@ html.is-offline .create-mini,
 html.is-offline .comment-form {
   cursor: not-allowed;
 }
+
+/* Music picker: choose which part of the song plays */
+.ms-chips .ms-newest { margin-left: auto; background: transparent; border: 1px solid var(--border); }
+.ms-chips .ms-newest.on { background: var(--text); color: var(--surface); }
+.ms-trim { margin: 0 4px 8px; padding: 12px 14px; border-radius: 12px; background: var(--surface-alt); }
+.ms-trim-title { margin: 0 0 8px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ms-trim .ms-chorus { border: 0; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 700; background: var(--text); color: var(--surface); }
+.ms-trim label { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.ms-trim label span { width: 52px; font-size: 14px; color: var(--muted); }
+.ms-trim input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent, #e0719b); }
+.ms-trim label b { width: 48px; text-align: right; font-size: 14px; }
+.ms-trim-note { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+
+.ms-tl { position: relative; height: 34px; border-radius: 8px; background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden; margin: 4px 0 2px; }
+.ms-tl i { position: absolute; top: 0; bottom: 0; display: block; }
+.ms-tl .tl-chorus { background: color-mix(in srgb, var(--accent, #e0719b) 35%, transparent); border-left: 2px solid var(--accent, #e0719b); border-right: 2px solid var(--accent, #e0719b); }
+.ms-tl .tl-sel { top: 11px; bottom: 11px; border-radius: 6px; background: var(--text); opacity: .85; }
+.ms-tl .tl-head { width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.4); left: 0; }
+.ms-tl-scale { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.ms-tl-scale .tl-ch-label { color: var(--accent, #e0719b); font-weight: 700; text-align: center; flex: 1; }
+
+/* ---- Full-screen music trimmer ---- */
+.mt-overlay { position: fixed; inset: 0; z-index: 2147483200; background: rgba(0,0,0,.82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); color: #fff; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.mt-top { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+.mt-top button { background: none; border: 0; color: #fff; font: inherit; font-weight: 800; font-size: 20px; padding: 8px 4px; }
+.mt-art { width: 46px; height: 46px; border-radius: 8px; object-fit: cover; border: 2px solid #fff; display: flex; align-items: center; justify-content: center; background: #222; }
+.mt-song { text-align: center; display: flex; flex-direction: column; gap: 2px; padding: 0 20px; }
+.mt-song small { opacity: .7; }
+.mt-title { margin: auto; font-size: 36px; font-weight: 800; letter-spacing: -.5px; text-align: center; }
+.mt-bottom { padding: 0 0 22px; position: relative; }
+.mt-remove { display: block; margin: 0 auto 14px; width: 54px; height: 54px; border-radius: 50%; border: 0; background: #fff; color: #e1306c; font-size: 30px; line-height: 1; font-weight: 700; }
+.mt-row { display: flex; align-items: center; gap: 16px; padding: 0 18px; margin-bottom: 14px; }
+.mt-len { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 2px solid #fff; background: transparent; color: #fff; font: inherit; font-weight: 800; font-size: 18px; }
+.mt-prog { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.28); }
+.mt-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: #fcc419; }
+.mt-dot { position: absolute; top: 50%; left: 0; width: 10px; height: 10px; border-radius: 50%; background: #d62976; transform: translate(-50%, -50%); }
+.mt-dot.r { left: 100%; }
+.mt-play { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; background: #fff; color: #000; font-size: 17px; }
+.mt-chip { display: block; margin: 0 auto 10px; border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 700; background: rgba(255,122,176,.2); color: #ff7ab0; }
+.mt-chip:disabled { opacity: .55; }
+.mt-wavewrap { position: relative; height: 84px; }
+.mt-scroll { position: absolute; inset: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.mt-scroll::-webkit-scrollbar { display: none; }
+.mt-wave { display: flex; align-items: center; gap: 6px; height: 100%; width: max-content; box-sizing: content-box; }
+.mt-wave span { flex: none; width: 4px; border-radius: 2px; background: #fff; opacity: .9; }
+.mt-wave span.ch { background: #ff7ab0; }
+.mt-frame { position: absolute; top: 4px; bottom: 4px; left: 50%; transform: translateX(-50%); border-radius: 8px; pointer-events: none; }
+.mt-frame::before { content: ""; position: absolute; inset: 0; border-radius: 8px; padding: 3px; background: linear-gradient(135deg, #feda75, #fa7e1e, #d62976, #962fbf); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); }
+.mt-info { text-align: center; margin: 10px 0 0; font-size: 14px; opacity: .8; }
+.pm-edit { flex: none; border: 0; background: transparent; color: inherit; font-size: 18px; padding: 6px 8px; cursor: pointer; }
