@@ -3808,6 +3808,16 @@ function stopPreview(block) {
   document.querySelectorAll(".pm-play").forEach(b => { b.textContent = "▶"; });
 }
 
+let previewFrom = 0, previewTo = 0;
+function setPreviewWindow(from, to) {
+  previewFrom = Number(from) || 0;
+  previewTo = Number(to) || 0;
+  if (!previewAudio) return;
+  previewAudio.ontimeupdate = previewTo > previewFrom ? () => { if (previewAudio.currentTime >= previewTo) { try { previewAudio.currentTime = previewFrom; } catch (e) {} previewAudio.play().catch(() => {}); } } : null;
+  try { previewAudio.currentTime = previewFrom; } catch (e) {}
+  if (previewAudio.paused) previewAudio.play().catch(() => {});
+}
+
 function startPreview(btn, url, start, auto, end) {
   if (!url) return;
   stopPreview(false);
@@ -3815,14 +3825,15 @@ function startPreview(btn, url, start, auto, end) {
   const from = Number(start) || 0;
   const to = Number(end) || 0;   // chorus end; 0 = play to the end of the clip
   previewAudio.src = url;
-  const loopBack = () => {
-    try { previewAudio.currentTime = from; } catch (e) {}
+  previewFrom = from; previewTo = to;
+  previewAudio.onended = () => {
+    try { previewAudio.currentTime = previewFrom; } catch (e) {}
     previewAudio.play().catch(() => stopPreview(false));
   };
-  previewAudio.onended = loopBack;
-  previewAudio.onloadedmetadata = () => { if (from) previewAudio.currentTime = from; };
-  // Only the chorus plays: loop between start and end instead of running the whole clip.
-  previewAudio.ontimeupdate = to > from ? () => { if (previewAudio.currentTime >= to) loopBack(); } : null;
+  previewAudio.onloadedmetadata = () => { if (previewFrom) previewAudio.currentTime = previewFrom; };
+  // Only the chosen part plays: loop between start and end instead of running the whole clip.
+  previewAudio.ontimeupdate = null;
+  if (to > from) setPreviewWindow(from, to);
   previewKey = url;
   previewSource = (btn && btn.closest(".post-card")) ? "feed" : "other";
   if (btn) btn.textContent = "❚❚";
@@ -3844,7 +3855,7 @@ function togglePreview(btn, url, start, end) {
 const CHORUS_LEN = 15;
 const chorusCache = new Map();
 async function findChorus(previewUrl) {
-  if (!previewUrl) return { start: 0, end: 0 };
+  if (!previewUrl) return { start: 0, end: 0, wave: null, dur: 30 };
   if (chorusCache.has(previewUrl)) return chorusCache.get(previewUrl);
   const job = (async () => {
     try {
@@ -3856,14 +3867,16 @@ async function findChorus(previewUrl) {
       const ctx = new AC();
       const audio = await new Promise((ok, no) => ctx.decodeAudioData(buf, ok, no));
       try { ctx.close(); } catch (e) {}
-      const ch = audio.getChannelData(0), sr = audio.sampleRate, dur = audio.duration;
-      if (dur <= CHORUS_LEN + 1) return { start: 0, end: Math.floor(dur) };
+      const ch = audio.getChannelData(0), sr = audio.sampleRate, dur = Math.min(30, audio.duration);
       const step = Math.floor(sr * 0.5), energy = [];
       for (let i = 0; i + step <= ch.length; i += step) {
         let sum = 0;
         for (let j = i; j < i + step; j += 8) sum += ch[j] * ch[j];
         energy.push(sum);
       }
+      const peak = Math.max.apply(null, energy.map(Math.sqrt)) || 1;
+      const wave = energy.map(e => Math.sqrt(e) / peak);
+      if (dur <= CHORUS_LEN + 1) return { start: 0, end: Math.floor(dur), wave, dur };
       const win = Math.round(CHORUS_LEN / 0.5);
       let best = 0, bestSum = -1, run = 0;
       for (let i = 0; i < energy.length; i++) {
@@ -3872,9 +3885,9 @@ async function findChorus(previewUrl) {
         if (i >= win - 1 && run > bestSum) { bestSum = run; best = i - win + 1; }
       }
       const start = Math.max(0, Math.min(best * 0.5, dur - CHORUS_LEN));
-      return { start: Math.round(start * 10) / 10, end: Math.round((start + CHORUS_LEN) * 10) / 10 };
+      return { start: Math.round(start * 10) / 10, end: Math.round((start + CHORUS_LEN) * 10) / 10, wave, dur };
     } catch (e) {
-      return { start: 0, end: 0 };
+      return { start: 0, end: 0, wave: null, dur: 30 };
     }
   })();
   chorusCache.set(previewUrl, job);
@@ -3984,6 +3997,7 @@ function musicBarHTML(music, removable) {
       ${art}
       <div class="pm-info"><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
       <button type="button" class="pm-play" onclick="togglePostMusic(this)" aria-label="Play music">${playing ? "❚❚" : "▶"}</button>
+      ${removable ? `<button type="button" class="pm-edit" onclick="editAttachedMusic('${removable === "comment" ? "comment" : "composer"}')" aria-label="Edit music">✂</button>` : ""}
       ${removable ? `<button type="button" class="pm-x" onclick="${removable === "comment" ? "clearCommentMusic()" : "removeComposerMusic()"}" aria-label="Remove music">×</button>` : ""}
     </div>`;
 }
@@ -4006,6 +4020,167 @@ function removeComposerMusic() {
   renderMusicPreview();
 }
 
+/* ---- Music trimmer (full screen, Instagram style) ----
+   Drag the waveform under the fixed frame to choose where the clip starts, tap the number to
+   change the length (5/10/15/20/30 s). Chorus bars are pink. Done saves, Cancel discards. */
+function editAttachedMusic(which) {
+  const m = which === "comment" ? commentMusic : composerMusic;
+  if (!m) return;
+  openMusicTrimmer(m, {
+    start: m.start, end: m.end,
+    onDone: sel => {
+      m.start = sel.start; m.end = sel.end;
+      if (which === "comment") showCommentPhotoPreview(); else renderMusicPreview();
+    },
+    onRemove: () => { if (which === "comment") clearCommentMusic(); else removeComposerMusic(); }
+  });
+}
+
+function openMusicTrimmer(track, opts) {
+  opts = opts || {};
+  const PPS = 20;                      // pixels per second of song
+  const LENS = [5, 10, 15, 20, 30];
+  let total = 30, len = 15, start = 0, chorus = null, wave = null, ignoreScroll = false, timer = null;
+  const s0 = Number(opts.start) || 0, e0 = Number(opts.end) || 0;
+  const hasInitial = e0 > s0;
+  if (hasInitial) { start = s0; len = LENS.reduce((b, x) => Math.abs(x - (e0 - s0)) < Math.abs(b - (e0 - s0)) ? x : b, 15); }
+
+  const ov = document.createElement("div");
+  ov.className = "mt-overlay";
+  ov.innerHTML = `
+    <div class="mt-top">
+      <button type="button" class="mt-cancel">Cancel</button>
+      ${track.artwork ? `<img class="mt-art" src="${escAttr(track.artwork)}" alt="">` : `<span class="mt-art mt-art-empty">♪</span>`}
+      <button type="button" class="mt-done">Done</button>
+    </div>
+    <div class="mt-song"><strong>${escapeHTML(track.title || "")}</strong><small>${escapeHTML(track.artist || "")}</small></div>
+    <div class="mt-title">Music only</div>
+    <div class="mt-bottom">
+      ${opts.onRemove ? `<button type="button" class="mt-remove" aria-label="Remove music">×</button>` : ""}
+      <div class="mt-row">
+        <button type="button" class="mt-len" aria-label="Clip length"></button>
+        <div class="mt-prog"><i class="mt-fill"></i><b class="mt-dot"></b><b class="mt-dot r"></b></div>
+        <button type="button" class="mt-play" aria-label="Play or pause">❚❚</button>
+      </div>
+      <button type="button" class="mt-chip"></button>
+      <div class="mt-wavewrap">
+        <div class="mt-scroll"><div class="mt-wave"></div></div>
+        <div class="mt-frame"></div>
+      </div>
+      <p class="mt-info"></p>
+    </div>`;
+  document.body.appendChild(ov);
+  const q = s => ov.querySelector(s);
+  const scroll = q(".mt-scroll"), waveEl = q(".mt-wave"), frame = q(".mt-frame"), lenBtn = q(".mt-len");
+  const fill = q(".mt-fill"), playBtn = q(".mt-play"), chip = q(".mt-chip"), info = q(".mt-info");
+  const fmt = n => Number(n).toFixed(1).replace(/\.0$/, "") + "s";
+
+  function layout() {
+    const frameW = len * PPS;
+    const pad = Math.max(0, (scroll.clientWidth - frameW) / 2);
+    waveEl.style.paddingLeft = pad + "px";
+    waveEl.style.paddingRight = pad + "px";
+    frame.style.width = frameW + "px";
+    lenBtn.textContent = len;
+    start = Math.max(0, Math.min(start, total - len));
+    ignoreScroll = true;
+    scroll.scrollLeft = start * PPS;
+    setTimeout(() => { ignoreScroll = false; }, 60);
+    paintInfo();
+  }
+
+  function drawBars() {
+    const n = wave ? wave.length : Math.round(total / 0.5);
+    let html = "";
+    for (let i = 0; i < n; i++) {
+      const v = wave ? wave[i] : 0.35;
+      const t = i * 0.5;
+      const inCh = chorus && t >= chorus.start && t < chorus.end;
+      html += `<span class="${inCh ? "ch" : ""}" style="height:${Math.round(10 + v * 44)}px"></span>`;
+    }
+    waveEl.innerHTML = html;
+  }
+
+  function paintInfo() {
+    info.textContent = fmt(start) + " – " + fmt(start + len);
+    chip.textContent = chorus ? "Chorus " + fmt(chorus.start) + " – " + fmt(chorus.end) : "Chorus not detected";
+    chip.disabled = !chorus;
+  }
+
+  function applyWindow(restart) {
+    if (restart && previewKey !== track.previewUrl) startPreview(null, track.previewUrl, start, false, start + len);
+    else setPreviewWindow(start, start + len);
+    playBtn.textContent = "❚❚";
+  }
+
+  scroll.addEventListener("scroll", () => {
+    if (ignoreScroll) return;
+    start = Math.max(0, Math.min(Math.round(scroll.scrollLeft / PPS * 10) / 10, total - len));
+    paintInfo();
+    clearTimeout(timer);
+    timer = setTimeout(() => applyWindow(false), 120);
+  }, { passive: true });
+
+  lenBtn.addEventListener("click", () => {
+    const opts2 = LENS.filter(x => x <= total);
+    len = opts2[(opts2.indexOf(len) + 1) % opts2.length];
+    layout();
+    applyWindow(false);
+  });
+
+  chip.addEventListener("click", () => {
+    if (!chorus) return;
+    len = LENS.reduce((b, x) => x <= total && Math.abs(x - (chorus.end - chorus.start)) < Math.abs(b - (chorus.end - chorus.start)) ? x : b, 15);
+    start = chorus.start;
+    layout();
+    applyWindow(false);
+  });
+
+  playBtn.addEventListener("click", () => {
+    if (previewAudio && !previewAudio.paused) { previewAudio.pause(); playBtn.textContent = "▶"; }
+    else if (previewKey === track.previewUrl) { previewAudio.play().catch(() => {}); playBtn.textContent = "❚❚"; }
+    else applyWindow(true);
+  });
+
+  const close = () => { clearTimeout(timer); stopPreview(false); ov.remove(); };
+  q(".mt-cancel").addEventListener("click", close);
+  q(".mt-done").addEventListener("click", () => {
+    const sel = { start: Math.round(start * 10) / 10, end: Math.round((start + len) * 10) / 10 };
+    close();
+    if (typeof opts.onDone === "function") opts.onDone(sel);
+  });
+  const rm = q(".mt-remove");
+  if (rm) rm.addEventListener("click", () => { close(); opts.onRemove(); });
+
+  // playhead / progress line
+  (function tick() {
+    if (!ov.isConnected) return;
+    if (previewAudio && previewKey === track.previewUrl) {
+      const pct = Math.max(0, Math.min(1, (previewAudio.currentTime - start) / len));
+      fill.style.width = (pct * 100) + "%";
+    }
+    requestAnimationFrame(tick);
+  })();
+
+  drawBars();
+  layout();
+  startPreview(null, track.previewUrl, start, false, start + len);
+
+  findChorus(track.previewUrl).then(a => {
+    if (!ov.isConnected) return;
+    if (a && a.dur) total = Math.min(30, a.dur);
+    wave = a && a.wave;
+    chorus = a && a.end > a.start ? { start: a.start, end: a.end } : null;
+    drawBars();
+    if (!hasInitial && chorus) {
+      len = LENS.reduce((b, x) => x <= total && Math.abs(x - (chorus.end - chorus.start)) < Math.abs(b - (chorus.end - chorus.start)) ? x : b, 15);
+      start = chorus.start;
+    }
+    layout();
+    applyWindow(false);
+  });
+}
+
 /* Saved songs (the bookmark button) are kept on this device only. */
 function getSavedSongs() {
   try { const v = JSON.parse(localStorage.getItem("nbh-saved-songs") || "[]"); return Array.isArray(v) ? v : []; } catch (e) { return []; }
@@ -4026,13 +4201,17 @@ function addMusic(onUse) {
       <div class="ms-chips">
         <button type="button" data-feed="foryou" class="on">For you</button>
         <button type="button" data-feed="trending">Trending</button>
+        <button type="button" data-feed="new">New</button>
         <button type="button" data-feed="saved">Saved</button>
+        <button type="button" data-newest class="ms-newest" aria-pressed="false">Newest first</button>
       </div>
       <div class="ms-list gs-body"></div>`, () => stopPreview());
 
   const input = ov.querySelector(".mp-input");
   const list = ov.querySelector(".ms-list");
   const chips = ov.querySelectorAll("[data-feed]");
+  const newestBtn = ov.querySelector("[data-newest]");
+  let newestFirst = false;
   let results = [];
   let feed = "foryou";
   let timer = null;
@@ -4099,23 +4278,30 @@ function addMusic(onUse) {
       if (mine !== token) return;
       const found = (res && res.results) || [];
       if (!found.length) { show(`<p class="mp-empty">No songs found. Try another search.</p>`); results = []; return; }
-      rows(found, false);
+      rows(newestFirst ? found.slice().sort((a, b) => Date.parse(b.releaseDate || 0) - Date.parse(a.releaseDate || 0)) : found, false);
     } catch (err) {
       if (mine !== token) return;
       show(`<p class="mp-empty">${escapeHTML((err && err.message) || "Couldn't search right now.")}</p>`);
     }
   }
 
+  let trim = null;
+  function removeTrim() { trim = null; }
+
   function selectRow(i) {
     const track = results[i];
     if (!track) return;
     stopPreview(false);
-    if (selected === i) { selected = -1; list.querySelectorAll(".ms-row").forEach(r => r.classList.remove("sel")); return; }
+    if (selected === i) { selected = -1; removeTrim(); list.querySelectorAll(".ms-row").forEach(r => r.classList.remove("sel")); return; }
     selected = i;
+    removeTrim();
+    const rowEl = list.querySelector(`.ms-row[data-row="${i}"]`);
     list.querySelectorAll(".ms-row").forEach(r => r.classList.toggle("sel", Number(r.dataset.row) === i));
     findChorus(track.previewUrl).then(ch => {
       if (selected !== i) return;
-      startPreview(null, track.previewUrl, ch.start, false, ch.end);
+      const s = ch.end > ch.start ? ch.start : 0;
+      const l = ch.end > ch.start ? Math.round(ch.end - ch.start) : 15;
+      startPreview(null, track.previewUrl, s, false, s + l);
     });
   }
 
@@ -4123,8 +4309,16 @@ function addMusic(onUse) {
     feed = c.dataset.feed;
     chips.forEach(x => x.classList.toggle("on", x === c));
     stopPreview(false);
+    removeTrim();
     loadFeed();
   }));
+  newestBtn.addEventListener("click", () => {
+    newestFirst = !newestFirst;
+    newestBtn.classList.toggle("on", newestFirst);
+    newestBtn.setAttribute("aria-pressed", newestFirst);
+    stopPreview(false);
+    if (input.value.trim().length >= 2) search();
+  });
   input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => (input.value.trim().length >= 2 ? search() : loadFeed()), 400); });
 
   list.addEventListener("click", event => {
@@ -4144,14 +4338,13 @@ function addMusic(onUse) {
     if (use) {
       const track = results[Number(use.dataset.use)];
       if (!track) return;
-      use.disabled = true;
-      findChorus(track.previewUrl).then(ch => {
-        const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: ch.start, end: ch.end };
-        close();
+      close();
+      openMusicTrimmer(track, { onDone: sel => {
+        const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: sel.start, end: sel.end };
         if (typeof onUse === "function") { onUse(picked); return; }
         composerMusic = picked;
         renderMusicPreview();
-      });
+      } });
       return;
     }
     const row = event.target.closest("[data-row]");
