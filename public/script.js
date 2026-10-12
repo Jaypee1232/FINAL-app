@@ -1086,7 +1086,7 @@ function openPage(page) {
   if (target) target.classList.add("active");
 
   document.querySelectorAll(".nav-item").forEach(btn => btn.classList.remove("active"));
-  const nav = document.querySelector(`.nav-item[onclick="openPage('${page}')"]`);
+  const nav = document.querySelector(`.nav-item[onclick="openPage('${page}')"], .nav-item[data-nav="${page}"]`);
   if (nav) nav.classList.add("active");
 
   document.querySelectorAll(".rail-item").forEach(btn => btn.classList.remove("active"));
@@ -1110,6 +1110,13 @@ function openPage(page) {
     renderNotifications();
     updateNotificationDot();
   }
+}
+
+/* Tapping Home always refreshes: back to the top, newest posts, comments and @mentions. */
+function goHome() {
+  openPage("home");
+  ["commentsModal", "postViewModal", "reactorsModal"].forEach(id => { if (typeof closeModal === "function") closeModal(id); });
+  refreshFeed({ quiet: true });
 }
 
 /* =========================================================
@@ -3801,19 +3808,21 @@ function stopPreview(block) {
   document.querySelectorAll(".pm-play").forEach(b => { b.textContent = "▶"; });
 }
 
-function startPreview(btn, url, start, auto) {
+function startPreview(btn, url, start, auto, end) {
   if (!url) return;
   stopPreview(false);
   if (!previewAudio) previewAudio = new Audio();
   const from = Number(start) || 0;
+  const to = Number(end) || 0;   // chorus end; 0 = play to the end of the clip
   previewAudio.src = url;
-  previewAudio.onended = () => {
-    // Loop forever: jump back to the start point and keep playing.
+  const loopBack = () => {
     try { previewAudio.currentTime = from; } catch (e) {}
     previewAudio.play().catch(() => stopPreview(false));
   };
+  previewAudio.onended = loopBack;
   previewAudio.onloadedmetadata = () => { if (from) previewAudio.currentTime = from; };
-  previewAudio.ontimeupdate = null;
+  // Only the chorus plays: loop between start and end instead of running the whole clip.
+  previewAudio.ontimeupdate = to > from ? () => { if (previewAudio.currentTime >= to) loopBack(); } : null;
   previewKey = url;
   previewSource = (btn && btn.closest(".post-card")) ? "feed" : "other";
   if (btn) btn.textContent = "❚❚";
@@ -3823,10 +3832,53 @@ function startPreview(btn, url, start, auto) {
   });
 }
 
-function togglePreview(btn, url, start) {
+function togglePreview(btn, url, start, end) {
   if (!url) return;
   if (previewKey === url) { stopPreview(true); return; }
-  startPreview(btn, url, start, false);
+  startPreview(btn, url, start, false, end);
+}
+
+/* ---- Chorus finder ----
+   Loads the 30-second preview through the server, measures loudness over time and picks the
+   loudest ~15-second stretch (the chorus is almost always the loudest, most repeated part). */
+const CHORUS_LEN = 15;
+const chorusCache = new Map();
+async function findChorus(previewUrl) {
+  if (!previewUrl) return { start: 0, end: 0 };
+  if (chorusCache.has(previewUrl)) return chorusCache.get(previewUrl);
+  const job = (async () => {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) throw new Error("no audio");
+      const res = await fetch("/api/music/clip?url=" + encodeURIComponent(previewUrl), { credentials: "same-origin" });
+      if (!res.ok) throw new Error("clip");
+      const buf = await res.arrayBuffer();
+      const ctx = new AC();
+      const audio = await new Promise((ok, no) => ctx.decodeAudioData(buf, ok, no));
+      try { ctx.close(); } catch (e) {}
+      const ch = audio.getChannelData(0), sr = audio.sampleRate, dur = audio.duration;
+      if (dur <= CHORUS_LEN + 1) return { start: 0, end: Math.floor(dur) };
+      const step = Math.floor(sr * 0.5), energy = [];
+      for (let i = 0; i + step <= ch.length; i += step) {
+        let sum = 0;
+        for (let j = i; j < i + step; j += 8) sum += ch[j] * ch[j];
+        energy.push(sum);
+      }
+      const win = Math.round(CHORUS_LEN / 0.5);
+      let best = 0, bestSum = -1, run = 0;
+      for (let i = 0; i < energy.length; i++) {
+        run += energy[i];
+        if (i >= win) run -= energy[i - win];
+        if (i >= win - 1 && run > bestSum) { bestSum = run; best = i - win + 1; }
+      }
+      const start = Math.max(0, Math.min(best * 0.5, dur - CHORUS_LEN));
+      return { start: Math.round(start * 10) / 10, end: Math.round((start + CHORUS_LEN) * 10) / 10 };
+    } catch (e) {
+      return { start: 0, end: 0 };
+    }
+  })();
+  chorusCache.set(previewUrl, job);
+  return job;
 }
 
 /* Autoplay: a post's music starts by itself when that post's PHOTO is scrolled into view
@@ -3872,7 +3924,7 @@ function pickVisibleMusic() {
   if (autoplayBlocked.has(url)) return;
   if (previewKey && previewSource === "other") return; // don't interrupt the song picker
   const box = best.querySelector(".post-music");
-  startPreview(box.querySelector(".pm-play"), url, Number(box.dataset.start) || 0, true);
+  startPreview(box.querySelector(".pm-play"), url, Number(box.dataset.start) || 0, true, Number(box.dataset.end) || 0);
 }
 
 const musicObserver = ("IntersectionObserver" in window)
@@ -3919,7 +3971,7 @@ document.addEventListener("visibilitychange", () => {
 function togglePostMusic(btn) {
   const box = btn.closest(".post-music");
   if (!box) return;
-  togglePreview(btn, box.dataset.preview, Number(box.dataset.start) || 0);
+  togglePreview(btn, box.dataset.preview, Number(box.dataset.start) || 0, Number(box.dataset.end) || 0);
 }
 
 function musicBarHTML(music, removable) {
@@ -3928,7 +3980,7 @@ function musicBarHTML(music, removable) {
     : `<span class="pm-art-empty">♪</span>`;
   const playing = previewKey === music.previewUrl;
   return `
-    <div class="post-music" data-preview="${escAttr(music.previewUrl)}" data-start="${Number(music.start) || 0}">
+    <div class="post-music" data-preview="${escAttr(music.previewUrl)}" data-start="${Number(music.start) || 0}" data-end="${Number(music.end) || 0}">
       ${art}
       <div class="pm-info"><strong>${escapeHTML(music.title)}</strong><small>${escapeHTML(music.artist)}</small></div>
       <button type="button" class="pm-play" onclick="togglePostMusic(this)" aria-label="Play music">${playing ? "❚❚" : "▶"}</button>
@@ -4061,7 +4113,10 @@ function addMusic(onUse) {
     if (selected === i) { selected = -1; list.querySelectorAll(".ms-row").forEach(r => r.classList.remove("sel")); return; }
     selected = i;
     list.querySelectorAll(".ms-row").forEach(r => r.classList.toggle("sel", Number(r.dataset.row) === i));
-    startPreview(null, track.previewUrl, 0, false);
+    findChorus(track.previewUrl).then(ch => {
+      if (selected !== i) return;
+      startPreview(null, track.previewUrl, ch.start, false, ch.end);
+    });
   }
 
   chips.forEach(c => c.addEventListener("click", () => {
@@ -4089,11 +4144,14 @@ function addMusic(onUse) {
     if (use) {
       const track = results[Number(use.dataset.use)];
       if (!track) return;
-      const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: 0 };
-      close();
-      if (typeof onUse === "function") { onUse(picked); return; }
-      composerMusic = picked;
-      renderMusicPreview();
+      use.disabled = true;
+      findChorus(track.previewUrl).then(ch => {
+        const picked = { id: track.id, title: track.title, artist: track.artist, artwork: track.artwork, previewUrl: track.previewUrl, start: ch.start, end: ch.end };
+        close();
+        if (typeof onUse === "function") { onUse(picked); return; }
+        composerMusic = picked;
+        renderMusicPreview();
+      });
       return;
     }
     const row = event.target.closest("[data-row]");
