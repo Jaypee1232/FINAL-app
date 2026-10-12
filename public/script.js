@@ -4310,10 +4310,11 @@ function updateMentionBox(field) {
   if (!m) return hideMentionBox();
   const q = m[2].toLowerCase();
   // Match the start of the handle, or the start of any word in the member's name.
-  const matches = otherMembers(me.username).filter(u => !u.disabled && (
+  // Everyone in the community (including you), so a bare "@" lists all members.
+  const matches = (data.users || []).filter(u => !u.disabled && (!q ||
     mentionHandle(u).toLowerCase().startsWith(q) ||
     String(u.name || "").toLowerCase().split(/\s+/).some(w => w.startsWith(q))
-  )).slice(0, 8);
+  )).sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
   if (!matches.length) return hideMentionBox();
   mentionTarget = { field, start: caret - q.length - 1, end: caret };
   mentionBox.innerHTML = matches.map(u => {
@@ -4321,14 +4322,30 @@ function updateMentionBox(field) {
     return `<button type="button" data-handle="${escAttr(mentionHandle(u))}">${av}<span><strong>${escapeHTML(u.name)}</strong><small>@${escapeHTML(mentionHandle(u))}</small></span></button>`;
   }).join("");
   const r = field.getBoundingClientRect();
-  mentionBox.style.left = Math.max(8, r.left) + "px";
-  mentionBox.style.width = Math.min(r.width, window.innerWidth - 16) + "px";
-  // On phones the keyboard shrinks the visual viewport, so measure from that, not the full window.
   const vv = window.visualViewport;
-  const viewBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-  mentionBox.style.bottom = Math.max(8, window.innerHeight - Math.min(r.top, viewBottom) + 6) + "px";
-  mentionBox.style.maxHeight = Math.max(120, Math.min(r.top, viewBottom) - 16) + "px";
+  const vTop = vv ? vv.offsetTop : 0;
+  const vBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  const vLeft = vv ? vv.offsetLeft : 0;
+  const vWidth = vv ? vv.width : window.innerWidth;
+  const width = Math.min(Math.max(r.width, 240), vWidth - 16);
+  mentionBox.style.left = Math.max(vLeft + 8, Math.min(r.left, vLeft + vWidth - width - 8)) + "px";
+  mentionBox.style.width = width + "px";
+  mentionBox.style.right = "auto";
   mentionBox.style.overflowY = "auto";
+  // Show the list just under the line being typed when there is room (the post box sits at the
+  // top of the screen); otherwise above the field (the comment box sits right above the keyboard).
+  const lineBottom = field.tagName === "TEXTAREA" ? Math.min(r.bottom, r.top + 44) : r.bottom;
+  const roomBelow = vBottom - lineBottom - 12;
+  const roomAbove = r.top - vTop - 12;
+  if (roomBelow >= 140 || roomBelow >= roomAbove) {
+    mentionBox.style.bottom = "auto";
+    mentionBox.style.top = Math.max(vTop + 8, lineBottom + 4) + "px";
+    mentionBox.style.maxHeight = Math.max(100, roomBelow) + "px";
+  } else {
+    mentionBox.style.top = "auto";
+    mentionBox.style.bottom = Math.max(8, window.innerHeight - (vTop + Math.min(r.top, vBottom - vTop)) + 6) + "px";
+    mentionBox.style.maxHeight = Math.max(100, roomAbove) + "px";
+  }
   mentionBox.classList.remove("hidden");
 }
 
@@ -4345,13 +4362,18 @@ mentionBox.addEventListener("click", event => {
   hideMentionBox();
 });
 
-["postText", "commentInput"].forEach(id => {
-  const field = document.getElementById(id);
-  if (!field) return;
-  field.addEventListener("input", () => updateMentionBox(field));
-  field.addEventListener("keyup", event => { if (event.key.startsWith("Arrow")) updateMentionBox(field); });
-  field.addEventListener("blur", () => setTimeout(hideMentionBox, 150));
-});
+const MENTION_FIELDS = ["postText", "commentInput"];
+document.addEventListener("input", event => {
+  const f = event.target;
+  if (f && MENTION_FIELDS.includes(f.id)) updateMentionBox(f);
+}, true);
+document.addEventListener("keyup", event => {
+  const f = event.target;
+  if (f && MENTION_FIELDS.includes(f.id)) updateMentionBox(f);
+}, true);
+document.addEventListener("focusout", event => {
+  if (event.target && MENTION_FIELDS.includes(event.target.id)) setTimeout(hideMentionBox, 250);
+}, true);
 
 /* =========================================================
    PWA: SERVICE WORKER REGISTRATION
