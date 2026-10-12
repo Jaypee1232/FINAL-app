@@ -667,13 +667,15 @@ function sanitizeMusic(m) {
   if (!m || typeof m !== "object" || Array.isArray(m)) return null;
   if (!isAppleMediaUrl(m.previewUrl)) return null;
   const start = Number(m.start);
+  const end = Number(m.end);
   return {
     id: clampString(m.id, 40),
     title: clampString(m.title, 150),
     artist: clampString(m.artist, 150),
     artwork: isAppleMediaUrl(m.artwork) ? clampString(m.artwork, 500) : "",
     previewUrl: clampString(m.previewUrl, 500),
-    start: Number.isFinite(start) ? Math.min(Math.max(start, 0), 25) : 0
+    start: Number.isFinite(start) ? Math.min(Math.max(start, 0), 25) : 0,
+    end: Number.isFinite(end) ? Math.min(Math.max(end, 0), 30) : 0
   };
 }
 
@@ -1239,6 +1241,26 @@ app.get("/api/music/search", requireAuth, ah(async (req, res) => {
   }
 }));
 
+// Same-origin proxy for a preview clip, so the browser can analyse it and find the chorus.
+app.get("/api/music/clip", requireAuth, ah(async (req, res) => {
+  const url = String(req.query.url || "");
+  if (!isAppleMediaUrl(url)) return res.status(400).json({ error: "Invalid clip." });
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) throw new Error("Clip returned " + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 3 * 1024 * 1024) throw new Error("Clip too large");
+    res.set("Content-Type", r.headers.get("content-type") || "audio/mp4");
+    res.set("Cache-Control", "private, max-age=86400");
+    res.send(buf);
+  } catch (err) {
+    res.status(502).json({ error: "Couldn't load that clip." });
+  }
+}));
+
 // "For you" (Philippines charts) and "Trending" (worldwide/US charts) lists shown before
 // anyone types a search. Apple's chart feed gives song ids, then a lookup adds the previews.
 const musicBrowseCache = new Map(); // feed -> { at, results }
@@ -1246,14 +1268,22 @@ const MUSIC_FEEDS = { foryou: "ph", trending: "us" };
 app.get("/api/music/browse", requireAuth, ah(async (req, res) => {
   const feed = MUSIC_FEEDS[req.query.feed] ? String(req.query.feed) : "foryou";
   const cached = musicBrowseCache.get(feed);
-  if (cached && Date.now() - cached.at < 60 * 60 * 1000) return res.json({ results: cached.results });
+  if (cached && Date.now() - cached.at < 15 * 60 * 1000) return res.json({ results: cached.results });
   try {
     const country = MUSIC_FEEDS[feed];
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 7000);
-    const chart = await fetch("https://rss.applemarketingtools.com/api/v2/" + country + "/music/most-played/100/songs.json", { signal: ctrl.signal });
-    if (!chart.ok) throw new Error("Chart returned " + chart.status);
-    const ids = ((await chart.json()).feed.results || []).map(x => String(x.id)).filter(id => /^\d+$/.test(id));
+    let ids = [];
+    try {
+      const chart = await fetch("https://rss.applemarketingtools.com/api/v2/" + country + "/music/most-played/100/songs.json?t=" + Date.now(), { signal: ctrl.signal });
+      if (!chart.ok) throw new Error("Chart returned " + chart.status);
+      ids = ((await chart.json()).feed.results || []).map(x => String(x.id)).filter(id => /^\d+$/.test(id));
+    } catch (e) {
+      // Fallback chart feed if the primary one is down or stale.
+      const alt = await fetch("https://itunes.apple.com/" + country + "/rss/topsongs/limit=100/json", { signal: ctrl.signal });
+      if (!alt.ok) throw new Error("Chart returned " + alt.status);
+      ids = (((await alt.json()).feed || {}).entry || []).map(x => String(x.id && x.id.attributes && x.id.attributes["im:id"])).filter(id => /^\d+$/.test(id));
+    }
     if (!ids.length) throw new Error("Empty chart");
     const look = await fetch("https://itunes.apple.com/lookup?country=" + country + "&entity=song&id=" + ids.join(","), { signal: ctrl.signal });
     clearTimeout(timer);
